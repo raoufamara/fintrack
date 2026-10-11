@@ -1,8 +1,8 @@
 # Fintrack Trips — Design Spec
 
 **Status:** Ready for implementation
-**Date:** 2026-10-11 (rev. 2: multi-currency, editable categories, can be split out as a standalone app)
-**Mockups:** https://claude.ai/artifact/3P8TtTUbNBC6ts25AStqkF (11 phone screens, 390×844. Screen 2 is interactive: tap the category chips.)
+**Date:** 2026-10-11 (rev. 3: guest read-only link, personal display currency, no link to the personal budget)
+**Mockups:** https://claude.ai/artifact/3P8TtTUbNBC6ts25AStqkF (13 phone screens, 390×844. Screen 2 is interactive: tap the category chips.)
 
 ---
 
@@ -16,6 +16,8 @@ Trips is a group expense tracker for travellers. It covers the same core job as 
 | **Optional location on expenses** (missing in Tricount) | Every expense can carry a place. It's one tap to attach, never required, and it powers filtering and spending by place. |
 | **Add and update categories** | Each trip starts with 8 default categories. Members can add, rename, recolour, re-icon, reorder, hide and delete them. |
 | **Multi-country, multi-currency trips** | Each expense can be in any currency. Everything is converted to the trip's **default currency** for totals and balances. Rates come from a free API and are **cached on the device**, so adding expenses works offline. |
+| **See it in my own currency** | Each person can pick a personal **display currency** (e.g. CAD). Totals and balances are also shown as an approximate conversion ("≈ CA$9.92"). This is for display only; the trip itself never changes. |
+| **Friends without an account** | A **view-only share link** works without signing up. Guests pick "Who are you?" to see their own balance, and can join with one tap to add expenses. |
 
 ### Design principles
 1. **Adding an expense takes under 10 seconds.** Only amount and title are required. Everything else has a smart default.
@@ -26,6 +28,7 @@ Trips is a group expense tracker for travellers. It covers the same core job as 
 6. **Build it as a separable module.** Trips may become its own app, so it must not depend on the personal-budget code (see §2.1).
 
 ### Out of scope for v1
+- **Any link to the personal budget. This is a decision, not a deferral:** trip expenses never create personal `transactions` and never count toward monthly budgets.
 - Balances shown in several currencies. v1 converts everything to the trip's default currency; a later version may keep a balance per currency.
 - Receipt photos and OCR
 - Map view
@@ -56,8 +59,14 @@ Add a **Trips** tab to `AppLayout` between Home and Insights, using the lucide i
 /trips/:tripId/categories           Manage categories              (screen 10)
 /trips/:tripId/categories/new       Add category (sheet)           (screen 11)
 /trips/:tripId/categories/:id       Edit category (sheet)          (screen 11)
-/trips/:tripId/settings             Members, default currency, budget, invite link, archive
+/trips/:tripId/settings             Members, default currency, my display currency, budget, share & invite links, archive
+
+/t/:shareToken                      Guest view, read-only, NO login   (screen 12)
+/t/:shareToken/balances             Guest balances
+/t/:shareToken/insights             Guest insights
 ```
+
+`/t/*` routes sit **outside** `ProtectedRoute`. They're the only Trips routes reachable without a session.
 
 Keep the **filter state in the URL query**. The back button then works, a filtered view can be shared, and the Insights screen can link into a filtered list.
 
@@ -249,6 +258,50 @@ Settings can change the default currency later. Changing it **re-converts every 
   - **Save.**
   - In "new" mode: the title is "New category", there's no Hide/Delete, and the default colour is the least-used colour on the trip.
 
+### 4.11 Guest view: read-only share link (screen 12)
+**Sharing (trip settings):**
+- A "Share view-only link" toggle, **on** by default for new trips.
+- Copy link, and **Reset link**, which rotates the token so old links stop working.
+- This is separate from the **invite to join** link/code, which needs an account.
+
+**What guests see:**
+- A slim amber bar: "View only · shared by {creator}".
+- The trip header, then a **"Who are you?"** chip row of all members. Picking a name shows that member's balance and their settle-up line ("Malik owes Sara €146.09").
+  - The choice is stored in `localStorage` under `trip-guest:{tripId}`. It's only a viewing preference; it proves nothing about identity.
+- The same expense list, category chips, filter sheet, insights and balances, in read-only mode:
+  - no Add button
+  - no edit on tap (the expense detail opens read-only)
+  - no "Mark as paid"
+  - no category management
+- A sticky footer CTA: **"Join as {picked name} to add expenses"**, or "Join to add expenses" if no name is picked. It goes to sign-up, then `join_trip(code, member_id)` links the account to that member, so their past expenses stay theirs.
+- Guests also get the **display currency** toggle (§4.12). Their default comes from the browser locale, and it's stored in `localStorage`.
+
+**What guests never see:**
+- account emails, or `user_id`s
+- the invite (join) code
+- who created or edited each expense
+- **exact coordinates.** `place_lat`/`place_lng` are dropped from the public payload; names and cities are kept.
+
+**Empty and error states:**
+- A link that is revoked or reset, or a sharing toggle that is off: "This link no longer works. Ask the trip owner for a new one."
+- An archived trip still loads, with a "Trip archived" chip.
+
+### 4.12 My display currency (screen 13)
+- **Concept:** each viewer can see amounts in their own currency, on top of the trip's default currency. It's **display only**: balances, settlements and stored data stay in the trip default.
+- **Where it's set:**
+  - A **"Show in"** segmented control on Balances and Insights: "{trip ccy} · trip" | "{my ccy} · mine".
+  - Trip settings → "My display currency".
+  - **Default:** the user's home currency (`users.currency`, CAD today). For guests, the browser locale's currency. If that equals the trip default, the toggle is hidden.
+- **How amounts show when "mine" is on:**
+  - The primary figure is "≈ CA$507.12", with the trip-currency figure underneath ("€329.17").
+  - The `≈` sign is **always** shown, because the conversion is approximate.
+  - A note under the control: "Approximate, at 1 EUR = 1.5406 CAD (saved 2h ago). Balances and payments stay in EUR."
+- **Which rate:** the **latest cached** default→display rate, applied to the final figures (totals, balances, transfers). It is *not* applied per expense. The point is "what does this cost me now", and it stays consistent with the settle-up amounts.
+- **Offline:** use the cached rate whatever its age, and show its age. With no cached rate, hide the toggle and show the trip currency.
+- **Applies to:** the trip header tiles, Balances, settle-up cards (as "≈ CA$9.92 on your card"), Insights tiles, and the category/place rows.
+- **Doesn't apply to:** the expense list rows, which keep the trip currency plus the original currency, so there aren't three amounts per row. The filtered total line *does* show the display currency.
+- **Who sees it:** the choice is personal. Other members keep seeing their own choice.
+
 ---
 
 ## 5. Data model (Supabase migration `002_trips.sql`)
@@ -261,7 +314,9 @@ create table public.trips (
   start_date date,
   end_date date,
   budget_amount numeric(14,2),                   -- in default_currency
-  invite_code text unique not null default substr(md5(gen_random_uuid()::text), 1, 8),
+  invite_code text unique not null default substr(md5(gen_random_uuid()::text), 1, 8),  -- join (needs account)
+  share_token text unique not null default encode(gen_random_bytes(18), 'base64'),     -- view-only link; generate URL-safe (replace +/ and strip =) in create_trip; requires pgcrypto
+  share_enabled boolean not null default true,
   created_by uuid not null references public.users(id),
   archived_at timestamptz,
   created_at timestamptz not null default now(),
@@ -274,6 +329,7 @@ create table public.trip_members (
   display_name text not null,
   user_id uuid references public.users(id) on delete set null,   -- null until claimed
   color text not null,
+  display_currency char(3),                       -- personal "show in" currency; null = users.currency
   created_at timestamptz not null default now(),
   unique (trip_id, user_id)
 );
@@ -363,6 +419,12 @@ create index idx_trip_members_user on public.trip_members(user_id);
 - `upsert_trip_expense(expense jsonb, shares jsonb)` checks that `sum(shares.amount) = amount` and that the category belongs to the trip. It is idempotent on `client_id`.
 - `delete_trip_category(category_id, move_to uuid default null)` reassigns expenses, then deletes the category. It refuses if expenses exist and `move_to` is null, or if this is the last visible category.
 - `reorder_trip_categories(trip_id, ordered_ids uuid[])`
+- `get_shared_trip(token text)`: **granted to `anon` and `authenticated`**, `security definer`, read-only.
+  - Returns `null` unless `share_enabled` is true and the token matches.
+  - Otherwise returns one JSON document: the trip (without `invite_code` and `share_token`), members (`id`, `display_name`, `color` only), categories, expenses (without `created_by`, `client_id`, `place_lat`, `place_lng`), shares, and settlements.
+  - **Rate limiting:** the token has 144 bits of entropy, which makes guessing impossible. Supabase's API rate limits apply on top. Never log the token.
+  - Guest pages use only this RPC. They make no direct table reads, and RLS stays closed to `anon`.
+- `rotate_share_token(trip_id)` and `set_share_enabled(trip_id, bool)`: members only.
 - `set_trip_default_currency(trip_id, currency, rates jsonb)` re-converts every expense with the rates the client supplies (keyed by `currency` and `fx_date`) and updates `default_currency` atomically.
 
 **Relation to REQUIREMENTS.md §3.8:** personal budgeting stays CAD-only. Trips is the first multi-currency module.
@@ -384,6 +446,7 @@ These live in `src/features/trips/lib/` and have no Supabase or network imports.
     4. Subtract each member's converted share from that member.
   - This keeps the invariant that **all balances sum exactly to 0**, even after currency conversion.
   - Then apply settlements.
+- **`toDisplay(amountMinorDefault, defaultCurrency, displayCurrency, rate)`** returns `{ minor, approx: true }`. It's used only for rendering; never persist the result.
 - **`suggestTransfers(balances)`:** greedy matching of the largest debtor with the largest creditor. The current user's transfers come first.
 - **`filterExpenses(expenses, filter, ctx)`:**
 
@@ -547,8 +610,18 @@ The existing `--color-cat-*` tokens are used by personal budgeting. Name the new
 **Phase 5: location**
 - `placesService`, `LocationField`, `LocationPicker`, the location facet and the hidden-expenses notice.
 
-**Phase 6: balances, insights, sharing**
+**Phase 6: balances, insights, joining**
 - Settle up, Insights, the invite link with `join_trip`, Realtime, and the retry queue.
+- **My display currency:** the "Show in" control, `toDisplay`, and the setting in trip settings.
+- *Acceptance:* with an EUR trip and CAD display, all tiles and balances show "≈ CA$" using the cached rate, while stored settlements stay in EUR.
+
+**Phase 7: guest view-only link**
+- `get_shared_trip`, `/t/:shareToken` routes outside auth, the read-only variants of the main screen, Balances and Insights, "Who are you?", join-as-member, and share settings (toggle, reset link).
+- *Acceptance:*
+  - In a private window, the link shows the trip and balances, and no write controls exist.
+  - The JSON payload contains no emails, coordinates or invite code.
+  - After a reset, the old link shows the "no longer works" state.
+  - "Join as Malik" leads to sign-up, then Malik's existing expenses belong to the new account.
 
 ---
 
@@ -559,8 +632,6 @@ The existing `--color-cat-*` tokens are used by personal budgeting. Name the new
 | 2 | Currency model | Each expense can be in any currency. Each trip has one **default currency**, and totals and balances are converted to it. Balances per currency are a later feature. |
 | 3 | Rates | A free API (fawazahmed0 currency-api via jsDelivr, with a mirror), cached on the device in IndexedDB, refreshed every 12h when online, and locked on each expense. |
 | 4 | Categories | Per trip, seeded with 8 defaults. Members can add, edit, reorder, hide and delete them (delete reassigns expenses). |
-
-### Still open
-1. Should trip expenses that you paid flow into your personal monthly budget? (Out of scope while Trips is being prepared to stand alone.)
-2. Can guests view a trip read-only via the link without an account?
-3. Should a member be able to see the trip in **their own** home currency, as a display-only conversion? This is cheap once the rate cache exists.
+| 5 | Trip expenses → personal budget? | **No.** Trips and personal budgeting stay fully separate. |
+| 6 | Guests without an account? | **Yes, read-only** via a share link, using "Who are you?" and join-as-member (§4.11). |
+| 7 | Show amounts in my own currency? | **Yes, display only**, using the latest cached rate, marked with "≈" (§4.12). |
