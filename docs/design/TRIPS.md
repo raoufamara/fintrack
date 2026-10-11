@@ -1,80 +1,130 @@
 # Fintrack Trips — Design Spec
 
 **Status:** Ready for implementation
-**Date:** 2026-10-11
-**Mockups:** https://claude.ai/artifact/3P8TtTUbNBC6ts25AStqkF (8 phone screens, 390×844. Screen 2 is interactive: tap the type chips.)
+**Date:** 2026-10-11 (rev. 2: multi-currency, editable categories, can be split out as a standalone app)
+**Mockups:** https://claude.ai/artifact/3P8TtTUbNBC6ts25AStqkF (11 phone screens, 390×844. Screen 2 is interactive: tap the category chips.)
 
 ---
 
 ## 1. What we're building and why
 
-Trips is a group expense tracker for travellers, built as a new module of Fintrack. It covers the same core job as Tricount and Splitwise: log who paid for what, split it, and settle up. It also fixes two gaps in Tricount:
+Trips is a group expense tracker for travellers. It covers the same core job as Tricount and Splitwise: log who paid for what, split it, and settle up. It also fixes two gaps in Tricount and adds two things travellers need:
 
-| Gap in Tricount | Our answer |
+| Need | Our answer |
 |---|---|
-| You can't filter expenses by type | **Type chips** sit on the trip's main screen and filter in one tap. A **filter sheet** combines type, location, payer and dates. Totals always follow the active filter. |
-| Expenses have no location | Every expense has an **optional location**. It's one tap to attach ("Use here: Ribeira, Porto"), it's never required, and it powers filtering and spending by place. |
+| **Filter expenses by category** (missing in Tricount) | **Category chips** sit on the trip's main screen and filter in one tap. A **filter sheet** combines category, location, payer and dates. Totals always follow the active filter. |
+| **Optional location on expenses** (missing in Tricount) | Every expense can carry a place. It's one tap to attach, never required, and it powers filtering and spending by place. |
+| **Add and update categories** | Each trip starts with 8 default categories. Members can add, rename, recolour, re-icon, reorder, hide and delete them. |
+| **Multi-country, multi-currency trips** | Each expense can be in any currency. Everything is converted to the trip's **default currency** for totals and balances. Rates come from a free API and are **cached on the device**, so adding expenses works offline. |
 
 ### Design principles
-1. **Adding an expense takes under 10 seconds.** Only amount and title are required. Everything else has a smart default (payer = you, split = everyone equally, date = today, type = last used or guessed from the title).
-2. **Filtering is always one tap away.** Type chips stay visible above the list. No filter is hidden behind a menu.
-3. **A total always matches what's on screen.** When a filter is active, the header total, the count and "your share" are recalculated for the filtered set.
+1. **Adding an expense takes under 10 seconds.** Only amount and title are required. Everything else has a smart default.
+2. **Filtering is always one tap away.** The chips stay visible above the list.
+3. **A total always matches what's on screen.** When a filter is active, the total, the count and "your share" are recalculated for the filtered set.
 4. **Location is optional and private by default.** We suggest a location but never attach one silently.
-5. **Reuse the Fintrack design system.** Use the same tokens, Manrope and radii, so Trips feels native.
+5. **Offline doesn't block entry.** Currency conversion never needs the network at the moment you add an expense.
+6. **Build it as a separable module.** Trips may become its own app, so it must not depend on the personal-budget code (see §2.1).
 
 ### Out of scope for v1
+- Balances shown in several currencies. v1 converts everything to the trip's default currency; a later version may keep a balance per currency.
 - Receipt photos and OCR
-- Live map view
+- Map view
 - Bank sync
 - Itemised bills (splitting line items)
-- Push notifications (the "Remind" button copies a share message instead)
-- Offline-first sync (we use optimistic UI only)
+- Push notifications
+- Full offline-first sync of expenses. v1 caches **rates** for offline use; expense writes still need the network, with optimistic UI and a retry queue (§7.3).
 
 ---
 
 ## 2. Information architecture
 
-Add a **Trips** tab to `AppLayout` between Home and Insights. Use the lucide icon `Plane`.
+Add a **Trips** tab to `AppLayout` between Home and Insights, using the lucide icon `Plane`.
 
 ```
-/trips                          Trips list                (screen 1)
-/trips/new                      Create trip               (form; see §4.1)
-/trips/join/:code               Join via invite code/link
-/trips/:tripId                  Trip expenses (main)      (screen 2)
-   ?type=food,activity&place=Lisbon&payer=<memberId>&from=2026-10-03&to=2026-10-10&mine=1
-/trips/:tripId/filters          Filter sheet (overlay)    (screen 3; filtered result is screen 4)
-/trips/:tripId/expenses/new     Add expense               (screen 5)
-/trips/:tripId/expenses/:id     Expense detail / edit     (reuse the add form, prefilled)
-/trips/:tripId/location         Location picker (overlay) (screen 6)
-/trips/:tripId/insights         Insights by type & place  (screen 7)
-/trips/:tripId/balances         Balances & settle up      (screen 8)
-/trips/:tripId/settings         Members, currency, budget, invite link, archive
+/trips                              Trips list                     (screen 1)
+/trips/new                          Create trip (name, dates, default currency, members, budget)
+/trips/join/:code                   Join via invite code/link
+/trips/:tripId                      Trip expenses (main)           (screen 2)
+   ?cat=<id>,<id>&place=Lisbon,none&payer=<memberId>&from=2026-10-03&to=2026-10-10&mine=1&q=tram
+/trips/:tripId/filters              Filter sheet (overlay)         (screen 3; filtered result is screen 4)
+/trips/:tripId/expenses/new         Add expense                    (screen 5)
+/trips/:tripId/expenses/:id         Expense detail / edit (same form, prefilled)
+/trips/:tripId/location             Location picker (overlay)      (screen 6)
+/trips/:tripId/currency             Currency picker (overlay)      (screen 9)
+/trips/:tripId/insights             Insights by category & place   (screen 7)
+/trips/:tripId/balances             Balances & settle up           (screen 8)
+/trips/:tripId/categories           Manage categories              (screen 10)
+/trips/:tripId/categories/new       Add category (sheet)           (screen 11)
+/trips/:tripId/categories/:id       Edit category (sheet)          (screen 11)
+/trips/:tripId/settings             Members, default currency, budget, invite link, archive
 ```
 
-Keep the **filter state in the URL query**. The Insights screen links into a filtered list, the back button works, and a filtered view can be shared.
+Keep the **filter state in the URL query**. The back button then works, a filtered view can be shared, and the Insights screen can link into a filtered list.
 
-The trip header gets three icon buttons (44×44) on the right: **Insights** (`PieChart`), **Balances** (`Scale`) and **Settings** (`Settings`). The mockup only shows the avatars and the balance card, which links to Balances.
+The trip header has three icon buttons (44×44) on the right: **Insights** (`PieChart`), **Balances** (`Scale`) and **Settings** (`Settings`).
+
+### 2.1 Module boundary (so Trips can become a standalone app)
+- Put all code under `src/features/trips/`, with subfolders `pages/`, `components/`, `lib/`, `services/`, `store/` and `types.ts`.
+- Allowed imports from outside: only `@/lib/supabase`, the auth store, and the shared UI primitives (`BottomSheet`, `Button`, design tokens). **Never** import from budget, category or transaction code, or from `PRESET_CATEGORIES`.
+- Trips tables use the `trip_` prefix and reference only `public.users`.
+- Routes are registered via one exported `tripsRoutes` element, so a standalone shell can mount them at `/`.
+- Add an ESLint `no-restricted-imports` rule for `src/features/trips/**` to enforce the boundary.
 
 ---
 
-## 3. Expense types (the filterable dimension)
+## 3. Categories (editable, per trip)
 
-The types are a fixed, travel-specific list in v1. They are separate from the 15 personal budgeting categories. Store them as a Postgres enum-like `text` with a check constraint, and keep the metadata in `src/lib/tripConstants.ts`.
+### 3.1 Defaults
+When a trip is created, it gets these 8 categories. They're ordinary rows, so all of them can be edited too.
 
-| id | Label | Lucide icon | Foreground | Background |
-|---|---|---|---|---|
-| `stay` | Stay | `BedDouble` | `#1460D8` | `#E3EEFF` |
-| `food` | Food & drinks | `Utensils` | `#B8470F` | `#FFF1E6` |
-| `transport` | Transport | `TrainFront` | `#0B7A82` | `#E2F5F6` |
-| `activity` | Activities | `Ticket` | `#6430E8` | `#F3EDFE` |
-| `groceries` | Groceries | `ShoppingBasket` | `#1F7F0C` | `#EDF7EC` |
-| `shopping` | Shopping | `ShoppingBag` | `#C02675` | `#FFEFF7` |
-| `fees` | Fees & tips | `CircleDollarSign` | `#555555` | `#F1F1F1` |
-| `other` | Other | `Ellipsis` | `#555555` | `#F1F1F1` |
+| key | Name | Icon | Colour key |
+|---|---|---|---|
+| `stay` | Stay | `bed-double` | blue |
+| `food` | Food & drinks | `utensils` | rust |
+| `transport` | Transport | `train-front` | teal |
+| `activity` | Activities | `ticket` | purple |
+| `groceries` | Groceries | `shopping-basket` | green |
+| `shopping` | Shopping | `shopping-bag` | pink |
+| `fees` | Fees & tips | `circle-dollar-sign` | grey |
+| `other` | Other | `ellipsis` | grey |
 
-All foreground colours meet 4.5:1 contrast on their backgrounds and on white. A selected chip uses white text on the foreground colour.
+`key` is kept only on seeded rows, so category auto-guessing (§3.4) still works after a rename. Custom categories have `key = null`.
 
-**Type auto-guess** (nice to have, phase 3): match keywords in the title case-insensitively. For example: `airbnb|hotel|hostel` → stay, `train|uber|taxi|bus|flight|metro|tram` → transport, `lunch|dinner|cafe|bar|restaurant|beer` → food. Only pre-select the guess; the user can always change it.
+### 3.2 Colour palette (curated, accessible)
+Users pick from a fixed palette, not free hex. Each colour has an `fg` value, used for icons and selected chips with white text, and a `bg` value, used for icon tiles. Every `fg` passes 4.5:1 against white and against its `bg`.
+
+| Colour key | fg | bg |
+|---|---|---|
+| blue | `#1460D8` | `#E3EEFF` |
+| rust | `#B8470F` | `#FFF1E6` |
+| teal | `#0B7A82` | `#E2F5F6` |
+| purple | `#6430E8` | `#F3EDFE` |
+| green | `#1F7F0C` | `#EDF7EC` |
+| pink | `#C02675` | `#FFEFF7` |
+| grey | `#555555` | `#F1F1F1` |
+
+Store the **colour key** (`'pink'`), never the hex value, so the palette can be retuned later, e.g. for dark mode.
+
+### 3.3 Icon set
+Offer a curated list of about 40 lucide icon names relevant to travel, in `src/features/trips/lib/categoryIcons.ts`. Show 11 in the grid plus a "More" button that opens the full list. Store the lucide name string, and render it through a map from name to component. Never use dynamic `import()` per icon.
+
+Suggested set: bed-double, hotel, tent, utensils, coffee, wine, beer, pizza, train-front, plane, bus, car, ship, bike, fuel, ticket, landmark, camera, mountain, waves, music, shopping-bag, shopping-basket, shirt, gift, heart-pulse, pill, sparkles (spa), scissors, wifi, smartphone, circle-dollar-sign, receipt, hand-coins, baby, dog, briefcase, graduation-cap, ellipsis, tag.
+
+### 3.4 Rules
+- **Who can edit:** any trip member. Changes are shared with everyone on the trip and appear for others via Realtime.
+- **Name:** 1–24 characters, trimmed, and unique within the trip, case- and accent-insensitive ("Café" and "cafe" clash). On a clash, show the inline error: "There's already a category called Café".
+- **Reorder:** drag handle on the manage screen. The order drives the picker grid, and the order of chips that have the same spend.
+- **Hide** (`hidden_at`): the category disappears from the add-expense grid and from filter chips with zero results. Existing expenses keep it and still show it. Hidden categories are listed under "Hidden" with a **Show** button.
+- **Delete:**
+  - If the category has **0 expenses**, ask "Delete Hammam & spa?" and delete it.
+  - If it **has expenses**, show a sheet: "Move its 3 expenses to…" with a category picker (default **Other**), then **Move & delete**. This happens in one RPC (`delete_trip_category(category_id, move_to)`).
+  - The last remaining visible category can't be hidden or deleted.
+- **Creating from the add-expense form:** the "New" tile opens the same sheet. After saving, the form selects the new category.
+- **Auto-guess** (phase 3): keyword match on the title, mapped to `key`, applied only if that seeded category still exists and isn't hidden. Example: `airbnb|hotel|hostel` → stay, `train|uber|taxi|bus|flight|metro|tram` → transport.
+- **Default for the next expense:** the category used last by this member on this trip.
+
+### 3.5 Personal defaults (later, not v1)
+"Save my categories as default for new trips" is useful once Trips is standalone. The design leaves room for it: a `user_category_presets` table can later seed new trips instead of the 8 built-ins.
 
 ---
 
@@ -83,89 +133,121 @@ All foreground colours meet 4.5:1 contrast on their backgrounds and on white. A 
 All screens are mobile-first. Content is max-width `md` and centred on desktop. Touch targets are at least 44px.
 
 ### 4.1 Trips list (screen 1)
-- **Ongoing trips** use the large dark card (`primary-dark` `#2F1D4F`). It shows name, dates, member count, currency, a "Day X of Y" badge, spend vs budget with a progress bar, and your balance line ("You owe Sara €6.44" or "You're owed €12.00" or "All settled").
-- **Upcoming and past trips** use compact white cards. Past trips show "Settled" (green) or "Open balance".
-- **Primary CTA:** "New trip". **Secondary:** "Join with code".
-- **Empty state:** an illustration slot, the line "Track a trip with friends. Everyone adds what they paid, Fintrack does the maths.", and a "New trip" button.
+- **Ongoing trips** use the large dark card (`#2F1D4F`). It shows name, dates, members, the default currency, "Day X of Y", spend vs budget, and your balance line.
+- **Past trips** use compact cards with "Settled" or "Open balance".
+- **Buttons:** "New trip" (primary) and "Join with code" (secondary).
+- **Empty state:** an illustration slot, one line of copy, and a "New trip" button.
 
-**Create trip form:** name (required), dates (optional), trip currency (default from locale), optional budget, and members. Members can be added by name only, Tricount-style. A member doesn't need an account; they can claim their name later via the invite link.
+**Create trip form:**
+- Name (required)
+- Dates (optional)
+- **Default currency** (required): the currency for totals and balances. It defaults to the user's home currency (CAD). Helper text: "Totals and balances are shown in this currency. You can still add expenses in any currency."
+- Optional budget, in the default currency
+- Members: name-only is fine; people can claim their name later via the invite link.
+
+Settings can change the default currency later. Changing it **re-converts every expense** using cached or fetched rates for each expense's date. Before applying, show a confirmation with the new totals.
 
 ### 4.2 Trip expenses: main screen (screen 2)
-Top to bottom:
-1. **Header (dark).** Back button, member avatars, dates and currency, trip name. Two stat tiles: **Group spent** (with a budget bar if a budget is set) and **Your balance** (links to Balances).
-2. **Search field.** Matches title, place name and city.
+1. **Header (dark).** Back button, avatars, dates, default currency, trip name. Two stat tiles: **Group spent** (in the default currency, with a budget bar) and **Your balance** (links to Balances).
+2. **Search field.** Matches the title, place name and city.
 3. **Filter button.** Opens the sheet and shows a count badge when non-chip filters are active.
-4. **Type chip row.** Scrolls horizontally. "All" comes first, then only the types used on this trip, ordered by spend descending. The chips are **multi-select** (OR within types). Tapping "All" clears the type filter.
-5. **Summary line.** "7 expenses" or "3 expenses · filtered" on the left, the filtered total on the right.
-6. **Expense list.** Grouped by day with sticky day headers (shown in screen 4). Each row has a type icon tile, a title, and a meta line with "{payer} paid · [pin] {place}". The place is omitted when there's no location. Amount is on the right in trip currency. If the expense was in another currency, show a second line in the original currency, e.g. "¥2,400".
-7. **"Add expense" floating button.** Bottom right.
+4. **Category chip row.** Scrolls horizontally. "All" comes first, then **only categories used on this trip**, ordered by spend descending (ties broken by `sort_order`). The chips are multi-select (OR within categories).
+5. **Summary line.** "N expenses (· filtered)" on the left, the filtered total in the default currency on the right.
+6. **Expense list.**
+   - Grouped by day with sticky day headers.
+   - Each row has a category icon tile, the title, and a meta line: "{payer} paid · [pin] {place}". The place is left out when there isn't one.
+   - The amount on the right is in the **default currency**.
+   - **If the expense was in another currency**, a second line shows the original amount, e.g. "240.00 MAD".
+   - An expense whose rate is still **pending** (§7.3) shows a small "rate pending" tag instead of the converted amount. It is left out of totals until the rate resolves, and the summary line says "+1 pending".
+7. **"Add expense"** floating button.
 
-**States:**
-- **Loading:** skeleton rows.
-- **No expenses:** "No expenses yet" plus a CTA.
-- **Filter returns nothing:** "Nothing matches these filters" and a "Clear filters" button.
+**States:** loading skeleton, no expenses yet, and no filter results (with "Clear filters").
 
 ### 4.3 Filter sheet (screen 3)
-A bottom sheet. Sections:
-- **Type.** Multi-select chips, each with a live count.
-- **Location.** Chips grouped by **city**, each with a count, plus a dashed **"No location"** chip. Tapping a selected city again expands it into neighbourhood chips (v2; v1 has cities only).
-- **Paid by.** Single-select: Anyone or a member.
-- **"Only expenses I'm part of".** A toggle that keeps expenses where the current member has a share.
-- **Dates.** From/To, clamped to the trip dates.
-- **Footer CTA.** Shows the live result: "Show N expenses · €X". "Reset" sits in the header.
+- **Category:** multi-select chips with live counts. Hidden categories appear only if they have expenses.
+- **Location:** city chips with counts, plus a dashed **"No location"** chip.
+- **Paid by:** single-select.
+- **"Only expenses I'm part of":** a toggle.
+- **Dates:** From/To.
+- **Footer CTA:** "Show N expenses · {total in default currency}".
 
-**Filter semantics (important):**
+**Filter semantics:**
 - Values within one facet combine with **OR**. Facets combine with **AND**.
-- Selecting a location excludes expenses with no location, unless "No location" is also selected.
-- When this happens, the results screen shows the amber notice: "2 expenses without a location are hidden by the Lisbon filter. **Include them**". The link adds `none` to the place filter.
+- Selecting a location excludes expenses that have no location, unless "No location" is also selected.
+- When that happens, the results screen shows: "2 expenses without a location are hidden by the Lisbon filter. **Include them**".
+- *Later:* a **Currency** facet (expenses paid in MAD). Leave a slot for it in `TripExpenseFilter`.
 
 ### 4.4 Filtered results (screen 4)
-- Active filters appear as removable pills: tinted with the type colour for types, neutral with a pin for places. A "Clear all" link follows them.
-- **Summary card:** filtered total, % of trip total, a stacked bar by type within the filter, and **"Your share of these"**.
+- Removable pills for active filters, plus "Clear all".
+- **Summary card:** the filtered total, its % of the trip total, a stacked bar by category, and "Your share of these".
 - The list is grouped by day.
 
 ### 4.5 Add / edit expense (screen 5)
-**Fields, in order:**
 
 | Field | Required | Default | Notes |
 |---|---|---|---|
-| Amount | yes | — | Large numeric input. A currency selector sits to its left. |
-| Currency | yes | trip currency | If it differs from the trip currency, show "≈ {trip ccy} X at today's rate". The rate is editable in "More". |
+| Amount | yes | — | Large numeric input. Respect the currency's minor units (JPY has 0 decimals, KWD has 3). |
+| Currency | yes | the currency **last used by this member on this trip**, else the trip default | A button left of the amount opens the currency picker (screen 9). |
+| Converted line | — | — | Shown when the currency differs from the default: "= €22.18 in trip currency · rate 0.0924 · cached 2h ago". When offline with no cached rate: "Rate pending — will convert when online", or tap to type a rate. |
 | Title | yes | — | "What was it?" |
-| Type | yes | last used on this trip, else `other` | 4×2 grid of icon tiles |
-| Paid by | yes | current member | Picker sheet |
-| Split | yes | equally between all members | Modes: Equally (choose members) · Exact amounts · Shares/weights. Exact amounts must sum to the total, or the Save button is disabled with an inline error. |
-| Date | yes | today (clamped to trip dates) | |
-| Location | **no** | empty | See below |
-| Note | no | — | Behind a "More" disclosure |
-
-**Location field behaviour:**
-- **Empty state.** Two buttons: **"Use here: {neighbourhood}, {city}"** and **"Search"**.
-- The "Use here" button appears only after the browser grants geolocation and reverse geocoding succeeds. Never prompt for geolocation on screen load. Ask on the first tap of a "Use current location" button, then remember the choice per device.
-- **Filled state.** A chip shows the pin, place name, and city, with an × to clear it.
-- **Saving without a location is normal**, not an error.
-
-**Footer:** "Save expense" is a full-width primary button. It's disabled until amount > 0 and a title is entered.
+| Category | yes | last used by this member on this trip, else **Other** | Grid of visible categories in `sort_order`, plus a **New** tile. An **Edit** link goes to screen 10. |
+| Paid by | yes | current member | |
+| Split | yes | equally between all members | Equal (choose members) · Exact amounts · Shares. Exact amounts are entered **in the expense's currency** and must sum to its total. |
+| Date | yes | today | |
+| Location | no | empty | "Use here: {area}, {city}" and "Search" (see §4.6) |
+| Note | no | — | Behind "More" |
 
 ### 4.6 Location picker (screen 6)
-- A search field with autofocus. Debounce 300 ms, with a minimum of 2 characters.
+- Search with a 300 ms debounce and a minimum of 2 characters.
 - **"Current location"** is the first row.
-- **Results:** place name (the matched part in bold), street, neighbourhood and city, and distance.
-- **"Used on this trip":** chips of places already used on this trip. They're one tap, work offline, and are the most common case.
-- **"Can't find it?"** saves the typed text as a free-text place. It still gets a `city`: the city of the user's current location if known, else the city of the trip's most recent located expense, else none.
-- **"Skip — no location"** sits at the bottom.
+- **Results:** place name, street, area and city, and distance.
+- **"Used on this trip":** chips of places already used on this trip.
+- **"Can't find it?":** saves the typed text as a free-text place, with a best-guess city.
+- **"Skip — no location".**
+- Geolocation is requested only after the user taps.
 
 ### 4.7 Insights (screen 7)
-- A segmented control switches between **Group total** and **My share**.
-- **Stat tiles:** Spent, Per day (spent ÷ days elapsed, capped at the trip length), and Left (budget minus spent, shown only if a budget is set).
-- **By type:** a stacked bar plus rows. Each row links to `/trips/:id?type=<id>`.
-- **By place:** one bar per city plus a "No location" row (grey). Each row links to `/trips/:id?place=<city>`.
-- **v2:** spend per day (bar chart), and spend by member.
+- A segmented control: **Group total** / **My share**.
+- **Tiles:** Spent, Per day, Left (budget minus spent).
+- **By category:** a stacked bar plus rows. Each row links to `?cat=<id>`.
+- **By place:** one row per city plus "No location". Each row links to `?place=<city>`.
+- **By currency** (small card, v1): "Paid in MAD: 1,840 MAD (= €170)". It helps travellers see cash needs per country.
+- All figures are in the default currency.
 
 ### 4.8 Balances & settle up (screen 8)
-- **Net balance per member.** Positive is green ("gets back"). Negative is shown with the warning colour `#B25E00` ("owes"), not red, because owing money isn't an error.
-- **"How to settle up":** the minimal transfer list. The current user's own transfer comes first, highlighted, with **"Mark as paid"**. Other transfers have **"Remind"**, which uses the share sheet with a prefilled message.
-- "Mark as paid" creates a `settlement` record. Balances recompute and the transfer disappears.
+- **Net balance per member**, in the **default currency**. Positive is green ("gets back"). Negative is amber `#B25E00` ("owes").
+- **Settle-up list:** the fewest transfers. The current user's own transfer comes first, with **Mark as paid**; others have **Remind**.
+- **A settlement is recorded in the default currency.** Paying in another currency is out of scope for v1, but leave a `currency` and `fx_rate` on settlements so it can be added.
+- A footnote under the list: "Converted to EUR at the rate saved on each expense."
+
+### 4.9 Currency picker (screen 9)
+- **Status banner:**
+  - "Rates saved on this phone, updated 2h ago. Works offline." (green)
+  - When rates are older than 7 days: "Rates from Oct 1 — connect to refresh" (amber)
+- **"On this trip" section:** the trip default (labelled "Trip currency"), then currencies already used on this trip, most recent first. Each row shows the rate against the default ("1 MAD = €0.0924").
+- **Search all currencies:** by ISO code, name or country ("dirham", "Morocco"). The list comes from the cached rate table plus a bundled `currencies.json` with code, name, symbol, minor units and countries.
+- **"Rate for this expense" editor:**
+  - Prefilled from the cache.
+  - The user can override it, e.g. to match a card statement or an exchange booth.
+  - "Reset" restores the cached rate.
+  - Copy: "The rate is locked on the expense so balances never shift later."
+- Picking a currency returns to the form.
+
+### 4.10 Manage categories (screen 10) and add/edit category (screen 11)
+- **Screen 10:**
+  - A short explainer, then the visible categories in `sort_order`. Each row has an icon tile, the name, an expense count, and a drag handle.
+  - Custom categories get a "CUSTOM" badge and "Added by {member}".
+  - Below that, a **Hidden** section with a **Show** button per category.
+  - A primary **"Add category"** button.
+  - Tapping a row opens screen 11.
+- **Screen 11 (bottom sheet):**
+  - A live **preview** (icon tile and chip).
+  - **Name** (24 characters max).
+  - **Icon** grid (11 icons plus More).
+  - **Colour** swatches (7). Each swatch is at least 44px and labelled for screen readers.
+  - **Hide** and **Delete** buttons (Delete is styled destructive), following the rules in §3.4.
+  - **Save.**
+  - In "new" mode: the title is "New category", there's no Hide/Delete, and the default colour is the least-used colour on the trip.
 
 ---
 
@@ -175,10 +257,10 @@ A bottom sheet. Sections:
 create table public.trips (
   id uuid primary key default gen_random_uuid(),
   name text not null check (length(name) between 1 and 80),
-  currency char(3) not null,                     -- ISO 4217, the trip/settlement currency
+  default_currency char(3) not null,             -- ISO 4217; totals & balances
   start_date date,
   end_date date,
-  budget_amount numeric(12,2),                   -- optional, in trip currency
+  budget_amount numeric(14,2),                   -- in default_currency
   invite_code text unique not null default substr(md5(gen_random_uuid()::text), 1, 8),
   created_by uuid not null references public.users(id),
   archived_at timestamptz,
@@ -186,52 +268,66 @@ create table public.trips (
   check (end_date is null or start_date is null or end_date >= start_date)
 );
 
--- Members can exist without an account (Tricount-style); user_id links when someone claims the name.
 create table public.trip_members (
   id uuid primary key default gen_random_uuid(),
   trip_id uuid not null references public.trips(id) on delete cascade,
   display_name text not null,
-  user_id uuid references public.users(id) on delete set null,
-  color text not null,                           -- avatar colour
+  user_id uuid references public.users(id) on delete set null,   -- null until claimed
+  color text not null,
   created_at timestamptz not null default now(),
   unique (trip_id, user_id)
 );
 
+create table public.trip_categories (
+  id uuid primary key default gen_random_uuid(),
+  trip_id uuid not null references public.trips(id) on delete cascade,
+  key text,                                       -- 'stay','food',… for seeded rows; null for custom
+  name text not null check (length(btrim(name)) between 1 and 24),
+  icon text not null,                             -- lucide name from the curated list
+  color text not null check (color in ('blue','rust','teal','purple','green','pink','grey')),
+  sort_order int not null default 0,
+  hidden_at timestamptz,
+  created_by_member uuid references public.trip_members(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+-- case/accent-insensitive unique name per trip
+create extension if not exists unaccent;
+create function public.immutable_unaccent(t text) returns text
+  language sql immutable parallel safe as $$ select public.unaccent('public.unaccent'::regdictionary, t) $$;
+create unique index uq_trip_categories_name
+  on public.trip_categories (trip_id, lower(public.immutable_unaccent(btrim(name))));
+
 create table public.trip_expenses (
   id uuid primary key default gen_random_uuid(),
   trip_id uuid not null references public.trips(id) on delete cascade,
+  category_id uuid not null references public.trip_categories(id),   -- no cascade: delete RPC reassigns first
   title text not null check (length(title) between 1 and 120),
-  type text not null default 'other'
-    check (type in ('stay','food','transport','activity','groceries','shopping','fees','other')),
-  amount numeric(12,2) not null check (amount > 0),        -- in original currency
+  amount numeric(14,3) not null check (amount > 0),                  -- in original currency (3 dp for KWD etc.)
   currency char(3) not null,
-  fx_rate numeric(18,8) not null default 1,                -- original -> trip currency, frozen at entry
-  amount_trip numeric(12,2) generated always as (round(amount * fx_rate, 2)) stored,
+  fx_rate numeric(20,10),                         -- 1 unit of currency -> default_currency; null = pending
+  fx_source text check (fx_source in ('cache','api','manual','same')),
+  fx_date date,                                   -- date of the rate table used
+  amount_default numeric(14,2),                   -- round(amount * fx_rate, 2); null while pending
   paid_by uuid not null references public.trip_members(id),
   split_mode text not null default 'equal' check (split_mode in ('equal','exact','shares')),
   date date not null default current_date,
   note text,
-  -- Optional location (all nullable; place_name null = no location)
-  place_name text,                -- "Café Santiago" or free text
-  place_address text,             -- "R. de Passos Manuel 226"
-  place_area text,                -- neighbourhood: "Bolhão"
-  place_city text,                -- "Porto"  (the filter/group key)
-  place_country char(2),          -- ISO 3166-1 alpha-2
-  place_lat double precision,
-  place_lng double precision,
-  place_provider_id text,         -- provider's place id, for dedupe
+  place_name text, place_address text, place_area text, place_city text,
+  place_country char(2), place_lat double precision, place_lng double precision, place_provider_id text,
   created_by uuid not null references public.users(id),
+  client_id uuid unique,                          -- idempotency key from the offline retry queue
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  check ((place_lat is null) = (place_lng is null))
+  check ((place_lat is null) = (place_lng is null)),
+  check ((fx_rate is null) = (amount_default is null))
 );
 
--- Who shares each expense and how much (in trip currency, cents-exact; sum = amount_trip)
 create table public.trip_expense_shares (
   expense_id uuid not null references public.trip_expenses(id) on delete cascade,
   member_id uuid not null references public.trip_members(id) on delete cascade,
-  weight numeric(8,3) not null default 1,         -- used when split_mode = 'shares'
-  amount_trip numeric(12,2) not null,             -- resolved share
+  weight numeric(8,3) not null default 1,
+  amount numeric(14,3) not null,                  -- share in the expense's original currency (exact)
   primary key (expense_id, member_id)
 );
 
@@ -240,172 +336,231 @@ create table public.trip_settlements (
   trip_id uuid not null references public.trips(id) on delete cascade,
   from_member uuid not null references public.trip_members(id),
   to_member uuid not null references public.trip_members(id),
-  amount_trip numeric(12,2) not null check (amount_trip > 0),
+  amount numeric(14,2) not null check (amount > 0),
+  currency char(3) not null,                      -- v1: always trip default_currency
+  fx_rate numeric(20,10) not null default 1,
   created_at timestamptz not null default now(),
   check (from_member <> to_member)
 );
 
 create index idx_trip_expenses_trip_date on public.trip_expenses(trip_id, date desc);
-create index idx_trip_expenses_trip_type on public.trip_expenses(trip_id, type);
+create index idx_trip_expenses_trip_cat on public.trip_expenses(trip_id, category_id);
 create index idx_trip_expenses_trip_city on public.trip_expenses(trip_id, place_city);
+create index idx_trip_categories_trip on public.trip_categories(trip_id, sort_order);
 create index idx_trip_members_user on public.trip_members(user_id);
 ```
 
-**RLS.** A user can access a trip if they are linked to one of its members. Use a `security definer` helper to avoid recursive policies:
+**Why the shares are stored in the original currency:** the split stays exact in the currency the bill was actually in. The conversion to the default currency happens once per expense, in `computeBalances` (§6). This means a rate correction on one expense fixes everything that depends on it.
 
-```sql
-create function public.is_trip_member(t uuid) returns boolean
-language sql security definer stable set search_path = public as $$
-  select exists (select 1 from trip_members where trip_id = t and user_id = auth.uid())
-$$;
-```
+**RLS:**
+- The helper `is_trip_member(trip_id)` is `security definer` and checks `trip_members.user_id = auth.uid()`.
+- Every `trip_*` table allows all operations where `is_trip_member(trip_id)`.
+- `trip_expense_shares` is checked through its parent expense.
 
-- `trips`: select/update/delete where `is_trip_member(id)`. Insert where `created_by = auth.uid()`.
-- `trip_members`, `trip_expenses`, `trip_settlements`: all operations where `is_trip_member(trip_id)`.
-- `trip_expense_shares`: access through the parent expense's `trip_id`.
-- **Joining.** An RPC `join_trip(code text, member_id uuid default null)`, `security definer`, does one of two things. With a `member_id`, it links `auth.uid()` to that unclaimed member. Without one, it creates a new member. It returns the trip id.
-- **Creating a trip.** An RPC `create_trip(...)` inserts the trip and the creator's member row in one transaction. Otherwise the creator can't see their own trip under RLS.
-- **Saving an expense with shares.** An RPC `upsert_trip_expense(expense jsonb, shares jsonb)` saves both atomically and checks `sum(shares) = amount_trip`.
+**RPCs** (`security definer`, transactional):
+- `create_trip(name, default_currency, start, end, budget, member_names[])` inserts the trip, the creator's member row, the other members, and the **8 default categories**.
+- `join_trip(code, member_id default null)`
+- `upsert_trip_expense(expense jsonb, shares jsonb)` checks that `sum(shares.amount) = amount` and that the category belongs to the trip. It is idempotent on `client_id`.
+- `delete_trip_category(category_id, move_to uuid default null)` reassigns expenses, then deletes the category. It refuses if expenses exist and `move_to` is null, or if this is the last visible category.
+- `reorder_trip_categories(trip_id, ordered_ids uuid[])`
+- `set_trip_default_currency(trip_id, currency, rates jsonb)` re-converts every expense with the rates the client supplies (keyed by `currency` and `fx_date`) and updates `default_currency` atomically.
 
-**Currency note.** REQUIREMENTS.md §3.8 says the app is CAD only in Phase 1. Trips needs per-trip currency, so this module is the first place multi-currency appears. The personal budget stays CAD.
-
-**FX rates.** Fetch the rate when the currency changes on the form. Use `https://api.frankfurter.app/latest?from=X&to=Y` (free, no key) behind `src/services/fxService.ts`. Cache rates for 12h in memory. The user can override the rate. Store the rate on the expense so balances never change afterwards.
+**Relation to REQUIREMENTS.md §3.8:** personal budgeting stays CAD-only. Trips is the first multi-currency module.
 
 ---
 
-## 6. Business logic (pure functions, unit-tested)
+## 6. Business logic (pure functions, Vitest-tested)
 
-Put these in `src/lib/trips/`. They have no Supabase imports.
+These live in `src/features/trips/lib/` and have no Supabase or network imports. All money is handled as **integer minor units**. Use `minorUnits(currency)` from `currencies.json`.
 
-### 6.1 `splitAmount(totalCents, mode, members[], weights?, exact?) → Map<memberId, cents>`
-- Work in **integer cents** only.
-- **Equal or shares mode:** use floor division, then hand out the leftover cents one each to members in a stable order (sorted by member id). The result always sums exactly to the total.
-- **Exact mode:** validate that the parts sum to the total; throw if not.
+- **`splitAmount(totalMinor, mode, memberIds, weights?, exact?)`** returns shares in the expense's currency. Use floor division, then hand out the leftover units one each in a stable order (sorted by member id). The shares always sum to the total.
+- **`toDefault(amountMinor, currency, fxRate, defaultCurrency)`** converts with banker's rounding to the default currency's minor units.
+- **`computeBalances(expenses, shares, settlements, defaultCurrency)`** returns a map of member to minor units in the default currency.
+  - **Skip** expenses with `fx_rate = null` (pending), and return their ids as `pendingIds` so the UI can flag them.
+  - For each expense:
+    1. Compute `totalDefault = round(amount × rate)` once.
+    2. Compute the shares in the default currency by **re-splitting `totalDefault` in proportion to the original shares**, using the same largest-remainder method.
+    3. Add `totalDefault` to the payer.
+    4. Subtract each member's converted share from that member.
+  - This keeps the invariant that **all balances sum exactly to 0**, even after currency conversion.
+  - Then apply settlements.
+- **`suggestTransfers(balances)`:** greedy matching of the largest debtor with the largest creditor. The current user's transfers come first.
+- **`filterExpenses(expenses, filter, ctx)`:**
 
-### 6.2 `computeBalances(expenses, shares, settlements) → Map<memberId, cents>`
-- Start everyone at 0.
-- For each expense: add `amount_trip` to the payer, and subtract each member's share from that member.
-- For each settlement: add the amount to `from_member` and subtract it from `to_member`.
-- Invariant: all balances sum to 0.
-
-### 6.3 `suggestTransfers(balances) → {from, to, cents}[]`
-- Use a greedy algorithm: repeatedly match the largest debtor with the largest creditor and transfer the smaller of the two amounts.
-- This produces at most n−1 transfers, which is good enough. The theoretical minimum is NP-hard and not worth it.
-- Sort the output so transfers involving the current user come first.
-
-### 6.4 `filterExpenses(expenses, filter, currentMemberId)`
 ```ts
 interface TripExpenseFilter {
-  types: ExpenseType[]          // [] = all
-  places: (string | 'none')[]   // city names, or 'none' for no location; [] = all
-  payer: string | null          // member id
-  mine: boolean                 // only where current member has a share
-  from: string | null           // ISO date
+  categoryIds: string[]         // [] = all
+  places: (string | 'none')[]
+  payer: string | null
+  mine: boolean
+  from: string | null
   to: string | null
-  q: string                     // matches title, place_name, place_city (case/accent-insensitive)
+  q: string                     // title, place_name, place_city; case/accent-insensitive
+  // reserved: currencies: string[]
 }
 ```
-- Also write `parseFilter(searchParams)` and `serializeFilter(filter)`, which round-trip with the URL.
-- Return `{ items, total, myShare, countByType, countByPlace, hiddenNoLocationCount }`. The facet counts in the filter sheet are computed with **that facet's own filter removed**, so each count shows what you'd get by toggling it.
 
-Filtering happens **on the client**. A trip has hundreds of expenses, not tens of thousands, so load all of them once per trip and filter in memory. This keeps filtering instant and lets it work offline-ish. Revisit if a trip ever exceeds 2,000 expenses.
+It returns `{ items, totalDefault, myShareDefault, pendingCount, countByCategory, countByPlace, hiddenNoLocationCount }`. Facet counts are computed with that facet's own filter removed. Also write `parseFilter` and `serializeFilter`, which round-trip with the URL.
+
+Filtering runs on the client over all of a trip's expenses, which are loaded once.
+
+**Tests must cover:**
+- Shares sum to the total for JPY (0 decimals), EUR (2) and KWD (3).
+- Balances sum to 0 across mixed currencies.
+- Pending expenses are excluded and reported.
+- Deleting a category reassigns expenses correctly (this test is on the RPC).
+- The filter round-trips through the URL.
+- A renamed category still filters by id.
 
 ---
 
-## 7. Location service
+## 7. Services
 
-Put this behind an interface so the provider can be swapped:
+### 7.1 Places (`services/placesService.ts`)
+- Use **Photon** (`https://photon.komoot.io/api?q=…&lat=…&lon=…&limit=8`) behind the `PlaceResult` interface: `searchPlaces` and `reverseGeocode`.
+- Time out after 5 seconds, then fall back to free text.
+- Never store a location the user didn't pick.
 
-```ts
-// src/services/placesService.ts
-export interface PlaceResult {
-  name: string; address?: string; area?: string; city?: string; country?: string
-  lat: number; lng: number; providerId: string; distanceM?: number
-}
-export function searchPlaces(query: string, near?: {lat: number; lng: number}): Promise<PlaceResult[]>
-export function reverseGeocode(lat: number, lng: number): Promise<PlaceResult | null>
-```
+### 7.2 Exchange rates (`services/fxService.ts`), with an offline cache
 
-- **v1 provider: Photon** (`https://photon.komoot.io/api?q=...&lat=..&lon=..&limit=8`). It's free, needs no API key, and is built on OpenStreetMap. Map its `name`, `street`/`housenumber`, `district`/`locality` → area, `city`, `countrycode`.
-- **Later:** swap in Mapbox or Google Places if quality isn't good enough. Nothing else changes.
-- **Failures must not block saving.** If search errors or times out (5s), show "Search unavailable — save as text" and fall back to free text.
-- **Privacy.** Store only what the user picked; never record a trail of locations. Request geolocation only after a tap.
+**Provider (free, no API key, 150+ currencies including MAD, VND, THB and ARS):**
+- Primary: `https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/{base}.json` (lowercase codes). The response looks like `{ "date": "2026-10-11", "eur": { "mad": 10.82, … } }`.
+- Fallback mirror for the same data: `https://latest.currency-api.pages.dev/v1/currencies/{base}.json`
+- Historical rates (for backdated expenses and for changing the default currency): `https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@{YYYY-MM-DD}/v1/currencies/{base}.json`
+- Optional second source, if accuracy complaints arise: Frankfurter (`api.frankfurter.app`). It uses ECB data but covers only about 30 currencies, so it isn't enough on its own for travel.
+- **The URLs above couldn't be tested from the design environment because its network blocks them.** Verify them in the first implementation PR.
+
+**Cache:**
+- **Store:** IndexedDB via `idb-keyval`, which is tiny. Key: `fx:{base}:{date}`. Value: `{ base, date, fetchedAt, rates: Record<string, number> }`.
+- Keep the **latest** table for each trip's default currency.
+- Also keep historical tables that were fetched for specific dates, in an LRU of 60 entries.
+- **When to refresh:**
+  - On app start, and when the device comes back online.
+  - When a trip is opened, if the latest table for its default currency is **older than 12h**.
+  - Refreshes happen in the background and never block the UI.
+- **Getting a rate:** `getRate(from, to, date)`. Rates are stored per base currency, so a cross rate can be computed from any cached table: `from→to = rates[to] / rates[from]`.
+  1. If the currencies are the same, the rate is `1` and the source is `same`.
+  2. If a cached table exists for that `date`, use it.
+  3. If the date is today, or no historical table exists, use the latest cached table, however old. Return `{ rate, source: 'cache', ageHours }` so the UI can show "cached 2h ago". Show an amber note when the age is over 7 days.
+  4. If online, fetch the table, cache it, and use it.
+  5. Otherwise return `null`, so the expense is **pending**.
+- **Pending expenses** are saved with `fx_rate = null`. A reconciler runs when the device comes online or a trip is opened. It fills in the rate for the expense's date and updates the expense. The user can also type a manual rate at any time; that sets `fx_source = 'manual'`, and the reconciler never overwrites a manual rate.
+- **Warm the cache:** after creating or opening a trip, prefetch the latest table for its default currency, so the first expense abroad already has a rate.
+- **Bundled data:** `currencies.json` (code, name, symbol, minor units, countries) for the picker. It works offline even with no rate table yet.
+
+### 7.3 Writes without network (minimal, v1)
+- Writes go through a small **retry queue**, persisted in IndexedDB and holding `{client_id, op, payload}`.
+- The expense appears immediately (optimistic) with a "Not synced" tag.
+- The queue is flushed when the device comes back online.
+- `client_id` makes `upsert_trip_expense` idempotent.
+- Full multi-device offline conflict resolution is out of scope.
 
 ---
 
-## 8. Components to build (`src/components/trips/`)
+## 8. Components (`src/features/trips/components/`)
 
 | Component | Used on |
 |---|---|
-| `TripCard` (variants `featured` and `compact`) | Trips list |
-| `TripHeader` (dark header with stat tiles) | Trip main |
-| `TypeChipRow` (multi-select, horizontal scroll, `aria-pressed`) | Trip main |
-| `ExpenseRow` (type tile, title, payer · place, amount, optional original currency) | Main, filtered results |
-| `DayGroupHeader` | Lists |
-| `ActiveFilterPills` | Filtered results |
-| `FilterSheet` (reusable `BottomSheet` + facet sections) | Overlay |
-| `TypeGrid` (4×2 selectable tiles) | Add expense |
-| `LocationField` (empty / suggesting / filled states) | Add expense |
-| `LocationPicker` | Overlay |
-| `SplitEditor` (equal / exact / shares) | Add expense |
-| `MemberAvatar`, `AvatarStack` | Many |
-| `BalanceRow`, `TransferCard` | Balances |
-| `StackedBar` (plain divs, no chart library needed) | Filtered results, Insights |
+| `TripCard` (featured / compact) | Trips list |
+| `TripHeader` | Trip main |
+| `CategoryChipRow` | Trip main |
+| `CategoryIcon` (renders the icon tile from category `icon` + `color`) | Everywhere |
+| `ExpenseRow` (with original-currency line, rate-pending tag, not-synced tag) | Lists |
+| `DayGroupHeader`, `ActiveFilterPills`, `StackedBar` | Lists, Insights |
+| `FilterSheet` (on a shared `BottomSheet`) | Overlay |
+| `AmountInput` (currency-aware decimals) and `CurrencyButton` | Add expense |
+| `CurrencyPicker`, `RateEditor`, `RateStatusBanner` | Overlay |
+| `CategoryGrid` (visible categories + New tile) | Add expense |
+| `CategoryList` (sortable with drag handle; use `@dnd-kit/sortable`), `CategoryEditSheet`, `MoveExpensesSheet` | Manage categories |
+| `LocationField`, `LocationPicker` | Add expense |
+| `SplitEditor` | Add expense |
+| `MemberAvatar`, `AvatarStack`, `BalanceRow`, `TransferCard` | Many |
 
-Store: `src/stores/tripStore.ts` (Zustand). It holds `trip`, `members`, `expenses`, `shares`, `settlements` and `currentMemberId`, plus actions for load/add/update/delete with optimistic updates. Subscribe to Supabase Realtime on `trip_expenses` for the open trip, so friends' expenses appear live.
+**Store:** `store/tripStore.ts` (Zustand) holds `trip`, `members`, `categories`, `expenses`, `shares`, `settlements`, `currentMemberId` and `syncQueue`. It subscribes to Supabase Realtime on `trip_expenses` and `trip_categories` for the open trip.
 
 ---
 
 ## 9. Design tokens (additions to `src/index.css`)
 
-Reuse the existing tokens, and add:
-
 ```css
---color-text-muted: #6F6F6F;      /* AA-compliant secondary text; #929292 fails 4.5:1 on white */
---color-owe: #B25E00;              /* "owes" amounts: amber, not error red */
+--color-text-muted: #6F6F6F;   /* AA-compliant caption grey; existing #929292 fails 4.5:1 */
+--color-owe: #B25E00;
 --color-sheet-scrim: rgba(24, 16, 40, 0.6);
-/* + the 8 type fg/bg pairs from §3 as --color-type-<id> / --color-type-<id>-bg */
+/* category palette (§3.2) */
+--color-cat-blue: #1460D8;   --color-cat-blue-bg: #E3EEFF;
+--color-cat-rust: #B8470F;   --color-cat-rust-bg: #FFF1E6;
+--color-cat-teal: #0B7A82;   --color-cat-teal-bg: #E2F5F6;
+--color-cat-purple: #6430E8; --color-cat-purple-bg: #F3EDFE;
+--color-cat-green: #1F7F0C;  --color-cat-green-bg: #EDF7EC;
+--color-cat-pink: #C02675;   --color-cat-pink-bg: #FFEFF7;
+--color-cat-grey: #555555;   --color-cat-grey-bg: #F1F1F1;
 ```
 
-Use `text-muted` for every caption in Trips. Accessibility note for the wider app: `text-secondary #929292` fails WCAG AA for body text. Consider swapping it app-wide later.
+The existing `--color-cat-*` tokens are used by personal budgeting. Name the new ones `--color-tripcat-*` if they clash.
 
 ---
 
 ## 10. Accessibility checklist
-- Chips are `<button aria-pressed>`. The chip row has `role="group" aria-label="Filter by type"`.
-- The bottom sheet traps focus, closes on Esc and on a scrim tap, and returns focus to the button that opened it.
-- Amounts are announced with their currency: use `Intl.NumberFormat` with `style: 'currency'` everywhere. Never concatenate "€" by hand.
-- Type is never conveyed by colour alone: there's always an icon plus a label (in chips and grid) or an icon plus a row title.
-- Every icon-only button has an `aria-label`.
+- Chips and swatches are `<button aria-pressed>`. Swatches have colour names as `aria-label`s.
+- The drag reorder has a keyboard alternative: "Move up" and "Move down" in each row's menu.
+- Bottom sheets trap focus, close on Esc and on a scrim tap, and return focus to the button that opened them.
+- Amounts are formatted with `Intl.NumberFormat(locale, { style: 'currency', currency })` everywhere. Original and converted amounts are both announced.
+- A category is never conveyed by colour alone: there's always an icon plus the name.
 
 ---
 
 ## 11. Build plan (one PR per phase)
 
 **Phase 1: foundation**
-- Migration `002_trips.sql`, the RPCs, RLS, and TS types in `src/types/trips.ts`.
-- `src/lib/trips/` with `splitAmount`, `computeBalances`, `suggestTransfers`, `filterExpenses`, `parseFilter` and `serializeFilter`, plus **Vitest** unit tests. Add `vitest` as a dev dependency and a `test` script.
-- *Acceptance:* tests pass. Shares and balances always sum exactly. A filter round-trips through the URL.
+- The migration, RPCs and RLS.
+- `types.ts`.
+- `lib/` with money (minor units), `splitAmount`, `toDefault`, `computeBalances`, `suggestTransfers`, `filterExpenses`, and parse/serialize for filters.
+- `currencies.json`.
+- Vitest, and the ESLint module-boundary rule.
+- *Acceptance:* all the tests in §6 pass.
 
-**Phase 2: trips and expenses (no location)**
-- Trips tab, the trips list, create trip, the trip main screen, and add/edit/delete expense with equal split.
-- *Acceptance:* create a trip with 3 name-only members, add 5 expenses, and see the correct "Your balance" figure.
+**Phase 2: trips and expenses, single currency**
+- Trips tab, trips list, create trip (with the default currency), the main screen, and add/edit/delete expense with an equal split.
+- The 8 seeded categories appear in the grid.
+- *Acceptance:* 3 name-only members and 5 expenses give the correct balances.
 
-**Phase 3: type filtering (gap #1)**
-- `TypeChipRow`, `FilterSheet` with type, payer, mine and dates, the filtered results screen, URL-synced filters, and the empty filter state.
-- *Acceptance:* selecting Food + Activities shows only those, with the correct total and count. The back button restores the previous filter.
+**Phase 3: category filtering and editing**
+- `CategoryChipRow`, `FilterSheet`, the filtered results screen, URL-synced filters.
+- Manage categories: add, rename, change icon and colour, reorder, hide/show, and delete with move-to.
+- The New tile in the add-expense form.
+- *Acceptance:*
+  - Selecting Food + Activities gives the correct list and total.
+  - Renaming Food to "Restaurants" updates the chips and the existing expenses.
+  - Deleting a category with 3 expenses moves them to the chosen category.
+  - A duplicate name is rejected.
 
-**Phase 4: location (gap #2)**
-- `placesService`, `LocationField`, `LocationPicker`, the location facet with "No location", and the hidden-expenses notice.
-- *Acceptance:* save expenses with a searched place, a current-location place, a free-text place, and no place. Filter by city. Expenses with no location are counted correctly.
+**Phase 4: multi-currency and the offline rate cache**
+- `fxService` with IndexedDB caching, the currency picker, the rate editor, the converted line, and pending rates with the reconciler.
+- The "By currency" card.
+- Changing the default currency in Settings.
+- *Acceptance:*
+  - Turn on airplane mode after one online session, add an expense in MAD, and it converts using the cached rate.
+  - Clear the cache while offline: the expense saves as pending and resolves when the device is back online.
+  - A manual rate is never overwritten.
+  - Balances sum to 0.
 
-**Phase 5: balances, insights, multi-currency, sharing**
-- Balances and settle-up, Insights, `fxService` with currency on the expense, the invite code/link with `join_trip`, and Realtime.
-- *Acceptance:* a second account joins via link, claims "Malik", adds an expense, and it appears live for the first account. "Mark as paid" brings the balances to zero.
+**Phase 5: location**
+- `placesService`, `LocationField`, `LocationPicker`, the location facet and the hidden-expenses notice.
+
+**Phase 6: balances, insights, sharing**
+- Settle up, Insights, the invite link with `join_trip`, Realtime, and the retry queue.
 
 ---
 
-## 12. Open questions for the product owner
-1. Should Trips stay a tab inside Fintrack, or become a standalone app later? This spec assumes a tab.
-2. Should trip expenses that **you** paid also flow into your personal monthly budget (e.g. as a "Travel" transaction for your share)? This is useful, but it's out of scope for v1.
-3. Can guests (no account) view a trip read-only via the link, like Tricount, or must everyone sign up?
+## 12. Decisions log
+| # | Question | Decision |
+|---|---|---|
+| 1 | Tab or standalone app? | It's a tab for now, and **may become its own app**: it's built as an isolated module (§2.1). |
+| 2 | Currency model | Each expense can be in any currency. Each trip has one **default currency**, and totals and balances are converted to it. Balances per currency are a later feature. |
+| 3 | Rates | A free API (fawazahmed0 currency-api via jsDelivr, with a mirror), cached on the device in IndexedDB, refreshed every 12h when online, and locked on each expense. |
+| 4 | Categories | Per trip, seeded with 8 defaults. Members can add, edit, reorder, hide and delete them (delete reassigns expenses). |
+
+### Still open
+1. Should trip expenses that you paid flow into your personal monthly budget? (Out of scope while Trips is being prepared to stand alone.)
+2. Can guests view a trip read-only via the link without an account?
+3. Should a member be able to see the trip in **their own** home currency, as a display-only conversion? This is cheap once the rate cache exists.
