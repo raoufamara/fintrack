@@ -408,24 +408,33 @@ create index idx_trip_members_user on public.trip_members(user_id);
 
 **Why the shares are stored in the original currency:** the split stays exact in the currency the bill was actually in. The conversion to the default currency happens once per expense, in `computeBalances` (§6). This means a rate correction on one expense fixes everything that depends on it.
 
-**RLS:**
-- The helper `is_trip_member(trip_id)` is `security definer` and checks `trip_members.user_id = auth.uid()`.
-- Every `trip_*` table allows all operations where `is_trip_member(trip_id)`.
-- `trip_expense_shares` is checked through its parent expense.
+**RLS and write model (hardened).** Members can read everything in their trips; almost every write goes through a validating RPC. Direct table writes are limited to a few harmless columns, by column-level grants plus RLS.
+- The helper `is_trip_member(trip_id)` is `security definer` and checks `trip_members.user_id = auth.uid()`. `anon` has no table access at all.
+- **SELECT** is allowed on every `trip_*` table for members. `trip_expense_shares` is checked through its parent expense.
+- **`trip_expenses`, `trip_expense_shares`, `trip_settlements`:** no direct insert, update or delete. Use `upsert_trip_expense`, `delete_trip_expense` and `record_settlement`.
+- **`trips`:** direct UPDATE of `name`, `start_date`, `end_date`, `budget_amount` and `archived_at` only. `default_currency`, `share_token`, `share_enabled` and `invite_code` change only through RPCs. Insert only via `create_trip`; no delete for now.
+- **`trip_members`:** direct UPDATE of `display_name`, `color` and `display_currency` only. A trigger lets only the member themself (`user_id = auth.uid()`) change `display_currency`. `user_id` changes only inside `join_trip`. Insert only via `create_trip`, `join_trip` and `add_trip_member` (always `user_id` null). No delete for now.
+- **`trip_categories`:** direct UPDATE of `name`, `icon`, `color` and `hidden_at`. A trigger checks the icon against the curated list, refuses to hide the last visible category and maintains `updated_at`. Insert via `create_trip_category`, delete via `delete_trip_category`, reorder via `reorder_trip_categories`.
 
-**RPCs** (`security definer`, transactional):
-- `create_trip(name, default_currency, start, end, budget, member_names[])` inserts the trip, the creator's member row, the other members, and the **8 default categories**.
-- `join_trip(code, member_id default null)`
-- `upsert_trip_expense(expense jsonb, shares jsonb)` checks that `sum(shares.amount) = amount` and that the category belongs to the trip. It is idempotent on `client_id`.
+**RPCs** (`security definer`, `set search_path = public`, transactional, explicit grants; each checks membership through `auth.uid()` except `get_shared_trip` and `join_trip`, which work by token or code):
+- `create_trip(name, default_currency, start, end, budget, member_names[])` inserts the trip, the creator's member row, the other members, and the **8 default categories**. Returns the trip id.
+- `join_trip(code, member_id default null)` claims an unclaimed member row, or creates a new member. Returns the caller's member id.
+- `add_trip_member(trip_id, name)` adds a name-only member.
+- `upsert_trip_expense(expense jsonb, shares jsonb)` checks that `sum(shares.amount) = amount`, that the category and members belong to the trip, and computes `amount_default`. It is idempotent on `client_id`. Returns the expense id.
+- `delete_trip_expense(expense_id)`
+- `record_settlement(trip_id, from, to, amount)` validates both members, `from <> to`, `amount > 0`, and records it in the trip default currency.
+- `create_trip_category(trip_id, name, icon, color)` validates the colour key and icon; a duplicate name raises `23505`.
 - `delete_trip_category(category_id, move_to uuid default null)` reassigns expenses, then deletes the category. It refuses if expenses exist and `move_to` is null, or if this is the last visible category.
 - `reorder_trip_categories(trip_id, ordered_ids uuid[])`
 - `get_shared_trip(token text)`: **granted to `anon` and `authenticated`**, `security definer`, read-only.
   - Returns `null` unless `share_enabled` is true and the token matches.
-  - Otherwise returns one JSON document: the trip (without `invite_code` and `share_token`), members (`id`, `display_name`, `color` only), categories, expenses (without `created_by`, `client_id`, `place_lat`, `place_lng`), shares, and settlements.
+  - Otherwise returns one JSON document: the trip (without `invite_code`, `share_token` and `created_by`), a `shared_by` display name, members (`id`, `display_name`, `color` only), categories, expenses (without `created_by`, `client_id`, `place_lat`, `place_lng`, `place_provider_id`), shares, and settlements.
   - **Rate limiting:** the token has 144 bits of entropy, which makes guessing impossible. Supabase's API rate limits apply on top. Never log the token.
   - Guest pages use only this RPC. They make no direct table reads, and RLS stays closed to `anon`.
 - `rotate_share_token(trip_id)` and `set_share_enabled(trip_id, bool)`: members only.
-- `set_trip_default_currency(trip_id, currency, rates jsonb)` re-converts every expense with the rates the client supplies (keyed by `currency` and `fx_date`) and updates `default_currency` atomically.
+- `set_trip_default_currency(trip_id, currency, rates jsonb)` re-converts every expense with the rates the client supplies (`{ "<CCY>": { "<YYYY-MM-DD>": rate, "latest": rate } }`, to the new default) and updates `default_currency` atomically. Expenses without a rate become pending; settlements and the budget are converted too, which needs the old default's `latest` rate.
+
+Assertions for this model live in `supabase/tests/002_trips_hardening.sql` (run on a scratch Postgres).
 
 **Relation to REQUIREMENTS.md §3.8:** personal budgeting stays CAD-only. Trips is the first multi-currency module.
 

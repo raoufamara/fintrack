@@ -58,7 +58,7 @@ create table if not exists public.trip_members (
   display_name text not null,
   user_id uuid references public.users(id) on delete set null,   -- null until claimed
   color text not null,
-  display_currency char(3),                       -- personal "show in" currency; null = users.currency
+  display_currency char(3) check (display_currency is null or display_currency ~ '^[A-Z]{3}$'),  -- personal "show in" currency; null = users.currency
   created_at timestamptz not null default now(),
   unique (trip_id, user_id)
 );
@@ -166,55 +166,150 @@ alter table public.trip_expenses       enable row level security;
 alter table public.trip_expense_shares enable row level security;
 alter table public.trip_settlements    enable row level security;
 
--- Anonymous visitors never read tables directly; guests use get_shared_trip().
+-- Hardened model: members READ everything of their trips directly, but almost all
+-- writes go through security definer RPCs (section 4), which validate the data.
+-- Direct writes are limited to a few harmless columns via column-level grants.
+-- Anonymous visitors never touch tables; guests use get_shared_trip().
 revoke all on public.trips, public.trip_members, public.trip_categories,
               public.trip_expenses, public.trip_expense_shares, public.trip_settlements
-  from anon;
+  from anon, authenticated;
+
+grant select on public.trips, public.trip_members, public.trip_categories,
+                public.trip_expenses, public.trip_expense_shares, public.trip_settlements
+  to authenticated;
+
+-- trips: direct UPDATE of name, dates, budget and archive flag only.
+-- default_currency, share_token, share_enabled, invite_code change via RPCs.
+-- Insert only via create_trip; no delete for now.
+grant update (name, start_date, end_date, budget_amount, archived_at) on public.trips to authenticated;
 
 drop policy if exists "Trip members can access trips" on public.trips;
-create policy "Trip members can access trips"
-  on public.trips for all to authenticated
+drop policy if exists "Trip members can read trips" on public.trips;
+create policy "Trip members can read trips"
+  on public.trips for select to authenticated
+  using (public.is_trip_member(id));
+drop policy if exists "Trip members can update trips" on public.trips;
+create policy "Trip members can update trips"
+  on public.trips for update to authenticated
   using (public.is_trip_member(id))
   with check (public.is_trip_member(id));
 
+-- trip_members: direct UPDATE of display_name, color, display_currency only.
+-- user_id changes only inside join_trip; inserts only via create_trip / join_trip /
+-- add_trip_member (always user_id null); no delete for now.
+grant update (display_name, color, display_currency) on public.trip_members to authenticated;
+
 drop policy if exists "Trip members can access members" on public.trip_members;
-create policy "Trip members can access members"
-  on public.trip_members for all to authenticated
+drop policy if exists "Trip members can read members" on public.trip_members;
+create policy "Trip members can read members"
+  on public.trip_members for select to authenticated
+  using (public.is_trip_member(trip_id));
+drop policy if exists "Trip members can update members" on public.trip_members;
+create policy "Trip members can update members"
+  on public.trip_members for update to authenticated
   using (public.is_trip_member(trip_id))
   with check (public.is_trip_member(trip_id));
+
+-- display_currency is personal: only the member themself may change it.
+create or replace function public.trip_members_guard()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if new.display_currency is distinct from old.display_currency
+     and old.user_id is distinct from auth.uid() then
+    raise exception 'Only the member themself can change their display currency' using errcode = '42501';
+  end if;
+  return new;
+end;
+$$;
+drop trigger if exists trip_members_guard on public.trip_members;
+create trigger trip_members_guard
+  before update on public.trip_members
+  for each row execute function public.trip_members_guard();
+
+-- trip_categories: direct UPDATE of name, icon, color, hidden_at (validated by trigger).
+-- Insert via create_trip_category, delete via delete_trip_category, reorder via RPC.
+grant update (name, icon, color, hidden_at) on public.trip_categories to authenticated;
 
 drop policy if exists "Trip members can access categories" on public.trip_categories;
-create policy "Trip members can access categories"
-  on public.trip_categories for all to authenticated
+drop policy if exists "Trip members can read categories" on public.trip_categories;
+create policy "Trip members can read categories"
+  on public.trip_categories for select to authenticated
+  using (public.is_trip_member(trip_id));
+drop policy if exists "Trip members can update categories" on public.trip_categories;
+create policy "Trip members can update categories"
+  on public.trip_categories for update to authenticated
   using (public.is_trip_member(trip_id))
   with check (public.is_trip_member(trip_id));
 
+-- Curated icon list (keep in sync with CATEGORY_ICONS in lib/categories.ts; a test checks it).
+create or replace function public.trip_category_icons()
+returns text[]
+language sql
+immutable
+as $$
+  select array[
+    'bed-double','hotel','tent','utensils','coffee','wine','beer','pizza',
+    'train-front','plane','bus','car','ship','bike','fuel','ticket',
+    'landmark','camera','mountain','waves','music','shopping-bag',
+    'shopping-basket','shirt','gift','heart-pulse','pill','sparkles',
+    'scissors','wifi','smartphone','circle-dollar-sign','receipt',
+    'hand-coins','baby','dog','briefcase','graduation-cap','ellipsis','tag'
+  ]::text[]
+$$;
+
+create or replace function public.trip_categories_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.icon is distinct from old.icon and not (new.icon = any (public.trip_category_icons())) then
+    raise exception 'Unknown icon' using errcode = '22023';
+  end if;
+  -- The last visible category can't be hidden.
+  if new.hidden_at is not null and old.hidden_at is null and not exists (
+    select 1 from public.trip_categories c
+    where c.trip_id = old.trip_id and c.id <> old.id and c.hidden_at is null
+  ) then
+    raise exception 'The last visible category cannot be hidden' using errcode = '23514';
+  end if;
+  new.updated_at := now();
+  return new;
+end;
+$$;
+drop trigger if exists trip_categories_guard on public.trip_categories;
+create trigger trip_categories_guard
+  before update on public.trip_categories
+  for each row execute function public.trip_categories_guard();
+
+-- Expenses, shares, settlements: read-only for members; all writes go through
+-- upsert_trip_expense, delete_trip_expense and record_settlement.
 drop policy if exists "Trip members can access expenses" on public.trip_expenses;
-create policy "Trip members can access expenses"
-  on public.trip_expenses for all to authenticated
-  using (public.is_trip_member(trip_id))
-  with check (public.is_trip_member(trip_id));
+drop policy if exists "Trip members can read expenses" on public.trip_expenses;
+create policy "Trip members can read expenses"
+  on public.trip_expenses for select to authenticated
+  using (public.is_trip_member(trip_id));
 
 -- Shares are checked through their parent expense.
 drop policy if exists "Trip members can access expense shares" on public.trip_expense_shares;
-create policy "Trip members can access expense shares"
-  on public.trip_expense_shares for all to authenticated
+drop policy if exists "Trip members can read expense shares" on public.trip_expense_shares;
+create policy "Trip members can read expense shares"
+  on public.trip_expense_shares for select to authenticated
   using (exists (
-    select 1 from public.trip_expenses e
-    where e.id = trip_expense_shares.expense_id
-      and public.is_trip_member(e.trip_id)
-  ))
-  with check (exists (
     select 1 from public.trip_expenses e
     where e.id = trip_expense_shares.expense_id
       and public.is_trip_member(e.trip_id)
   ));
 
 drop policy if exists "Trip members can access settlements" on public.trip_settlements;
-create policy "Trip members can access settlements"
-  on public.trip_settlements for all to authenticated
-  using (public.is_trip_member(trip_id))
-  with check (public.is_trip_member(trip_id));
+drop policy if exists "Trip members can read settlements" on public.trip_settlements;
+create policy "Trip members can read settlements"
+  on public.trip_settlements for select to authenticated
+  using (public.is_trip_member(trip_id));
 
 -- --------------------------------------------
 -- 4. RPCs (all security definer, search_path = public)
@@ -909,6 +1004,162 @@ begin
 end;
 $$;
 
+-- 4.9 delete_trip_expense ------------------------------------------------
+create or replace function public.delete_trip_expense(p_expense_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_trip uuid;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated' using errcode = '28000';
+  end if;
+  select e.trip_id into v_trip from public.trip_expenses e where e.id = p_expense_id;
+  if v_trip is null then
+    raise exception 'Expense not found' using errcode = 'P0002';
+  end if;
+  if not public.is_trip_member(v_trip) then
+    raise exception 'Not a member of this trip' using errcode = '42501';
+  end if;
+  delete from public.trip_expenses where id = p_expense_id;  -- shares cascade
+end;
+$$;
+
+-- 4.10 record_settlement -------------------------------------------------
+-- A settlement is always recorded in the trip default currency (v1).
+create or replace function public.record_settlement(
+  p_trip_id uuid,
+  p_from uuid,
+  p_to uuid,
+  p_amount numeric
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_currency text;
+  v_id uuid;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated' using errcode = '28000';
+  end if;
+  if not public.is_trip_member(p_trip_id) then
+    raise exception 'Not a member of this trip' using errcode = '42501';
+  end if;
+  if p_from is null or p_to is null or p_from = p_to then
+    raise exception 'A settlement needs two different members' using errcode = '22023';
+  end if;
+  if p_amount is null or p_amount <= 0 then
+    raise exception 'Amount must be positive' using errcode = '22023';
+  end if;
+  if (select count(*) from public.trip_members m
+        where m.trip_id = p_trip_id and m.id in (p_from, p_to)) <> 2 then
+    raise exception 'Both members must belong to this trip' using errcode = '22023';
+  end if;
+
+  select t.default_currency into v_currency from public.trips t where t.id = p_trip_id;
+
+  insert into public.trip_settlements (trip_id, from_member, to_member, amount, currency, fx_rate)
+  values (p_trip_id, p_from, p_to, round(p_amount, 2), v_currency, 1)
+  returning id into v_id;
+  return v_id;
+end;
+$$;
+
+-- 4.11 add_trip_member ---------------------------------------------------
+-- Adds a name-only member (user_id always null; they can claim it via join_trip).
+create or replace function public.add_trip_member(p_trip_id uuid, p_name text)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_name text := btrim(coalesce(p_name, ''));
+  v_colors text[] := array['#FD6FB8','#93D4D9','#FDAC62','#D0E2FF','#B9A1FF','#A8E6A1','#FFD36B','#F7B2B2'];
+  v_count int;
+  v_id uuid;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated' using errcode = '28000';
+  end if;
+  if not public.is_trip_member(p_trip_id) then
+    raise exception 'Not a member of this trip' using errcode = '42501';
+  end if;
+  if length(v_name) < 1 or length(v_name) > 40 then
+    raise exception 'Name must be 1-40 characters' using errcode = '22023';
+  end if;
+  select count(*) into v_count from public.trip_members m where m.trip_id = p_trip_id;
+  if v_count >= 50 then
+    raise exception 'Too many members' using errcode = '22023';
+  end if;
+
+  insert into public.trip_members (trip_id, display_name, color)
+  values (p_trip_id, v_name, v_colors[(v_count % array_length(v_colors, 1)) + 1])
+  returning id into v_id;
+  return v_id;
+end;
+$$;
+
+-- 4.12 create_trip_category ----------------------------------------------
+create or replace function public.create_trip_category(
+  p_trip_id uuid,
+  p_name text,
+  p_icon text,
+  p_color text
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_name text := btrim(coalesce(p_name, ''));
+  v_member uuid;
+  v_order int;
+  v_id uuid;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated' using errcode = '28000';
+  end if;
+  if not public.is_trip_member(p_trip_id) then
+    raise exception 'Not a member of this trip' using errcode = '42501';
+  end if;
+  if length(v_name) < 1 or length(v_name) > 24 then
+    raise exception 'Name must be 1-24 characters' using errcode = '22023';
+  end if;
+  if p_color is null or p_color not in ('blue','rust','teal','purple','green','pink','grey') then
+    raise exception 'Unknown colour' using errcode = '22023';
+  end if;
+  if p_icon is null or not (p_icon = any (public.trip_category_icons())) then
+    raise exception 'Unknown icon' using errcode = '22023';
+  end if;
+
+  select m.id into v_member from public.trip_members m
+    where m.trip_id = p_trip_id and m.user_id = v_uid;
+  select coalesce(max(c.sort_order), -1) + 1 into v_order
+    from public.trip_categories c where c.trip_id = p_trip_id;
+
+  begin
+    insert into public.trip_categories (trip_id, name, icon, color, sort_order, created_by_member)
+    values (p_trip_id, v_name, p_icon, p_color, v_order, v_member)
+    returning id into v_id;
+  exception when unique_violation then
+    raise exception 'There''s already a category called %', v_name using errcode = '23505';
+  end;
+  return v_id;
+end;
+$$;
+
 -- --------------------------------------------
 -- 5. Grants (explicit; functions are not executable by PUBLIC by default)
 -- --------------------------------------------
@@ -921,6 +1172,10 @@ revoke all on function public.set_trip_default_currency(uuid, text, jsonb)      
 revoke all on function public.get_shared_trip(text)                                         from public;
 revoke all on function public.rotate_share_token(uuid)                                      from public;
 revoke all on function public.set_share_enabled(uuid, boolean)                              from public;
+revoke all on function public.delete_trip_expense(uuid)                                     from public;
+revoke all on function public.record_settlement(uuid, uuid, uuid, numeric)                  from public;
+revoke all on function public.add_trip_member(uuid, text)                                   from public;
+revoke all on function public.create_trip_category(uuid, text, text, text)                  from public;
 
 grant execute on function public.create_trip(text, text, date, date, numeric, text[])       to authenticated;
 grant execute on function public.join_trip(text, uuid)                                      to authenticated;
@@ -931,6 +1186,10 @@ grant execute on function public.set_trip_default_currency(uuid, text, jsonb)   
 grant execute on function public.get_shared_trip(text)                                      to anon, authenticated;
 grant execute on function public.rotate_share_token(uuid)                                   to authenticated;
 grant execute on function public.set_share_enabled(uuid, boolean)                           to authenticated;
+grant execute on function public.delete_trip_expense(uuid)                                  to authenticated;
+grant execute on function public.record_settlement(uuid, uuid, uuid, numeric)               to authenticated;
+grant execute on function public.add_trip_member(uuid, text)                                to authenticated;
+grant execute on function public.create_trip_category(uuid, text, text, text)               to authenticated;
 
 -- --------------------------------------------
 -- 6. Realtime (used from phase 6): expenses and categories of the open trip

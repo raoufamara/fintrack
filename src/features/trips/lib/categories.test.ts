@@ -50,3 +50,23 @@ describe('duplicate category names', () => {
     expect(isDuplicateCategoryName('food & DRINKS', cats, '1')).toBe(true)
   })
 })
+
+describe('SQL sync', () => {
+  it('keeps the icon list in 002_trips.sql identical to CATEGORY_ICONS', async () => {
+    const { readFileSync } = await import('node:fs')
+    const sql = readFileSync('supabase/migrations/002_trips.sql', 'utf8')
+    const body = /function public\.trip_category_icons\(\)[\s\S]*?array\[([\s\S]*?)\]::text\[\]/.exec(sql)?.[1] ?? ''
+    const sqlIcons = [...body.matchAll(/'([^']+)'/g)].map((m) => m[1])
+    expect(sqlIcons).toEqual([...CATEGORY_ICONS])
+  })
+
+  it('seeds the same default categories as create_trip', async () => {
+    const { readFileSync } = await import('node:fs')
+    const sql = readFileSync('supabase/migrations/002_trips.sql', 'utf8')
+    for (const c of DEFAULT_CATEGORIES) {
+      expect(sql).toContain(`'${c.key}'`)
+      expect(sql).toContain(`'${c.name}'`)
+      expect(sql).toContain(`'${c.icon}'`)
+    }
+  })
+})
