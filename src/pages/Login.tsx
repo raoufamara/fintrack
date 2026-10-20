@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { safeRedirect } from '@/lib/safeRedirect'
 import { useAuthStore } from '@/stores/authStore'
 
 export function Login() {
@@ -9,6 +10,9 @@ export function Login() {
   const [loading, setLoading] = useState(false)
   const signIn = useAuthStore((s) => s.signIn)
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const redirect = safeRedirect(searchParams.get('redirect'))
+  const withRedirect = (path: string) => (redirect === '/' ? path : `${path}?redirect=${encodeURIComponent(redirect)}`)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -21,7 +25,7 @@ export function Login() {
     if (error) {
       setError(error)
     } else {
-      navigate('/')
+      navigate(redirect, { replace: true })
     }
   }
 
@@ -80,7 +84,7 @@ export function Login() {
 
         <p className="text-center text-sm text-text-secondary mt-6">
           Don't have an account?{' '}
-          <Link to="/signup" className="text-primary font-semibold">
+          <Link to={withRedirect('/signup')} className="text-primary font-semibold">
             Sign up
           </Link>
         </p>

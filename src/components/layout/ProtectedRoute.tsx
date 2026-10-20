@@ -1,8 +1,9 @@
-import { Navigate } from 'react-router-dom'
+import { Navigate, useLocation } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 
 export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { session, loading } = useAuthStore()
+  const location = useLocation()
 
   if (loading) {
     return (
@@ -13,7 +14,9 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   }
 
   if (!session) {
-    return <Navigate to="/login" replace />
+    // Remember where they were going (e.g. an invite link) so login can send them back.
+    const back = location.pathname + location.search
+    return <Navigate to={back === '/' ? '/login' : `/login?redirect=${encodeURIComponent(back)}`} replace />
   }
 
   return <>{children}</>
