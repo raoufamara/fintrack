@@ -979,7 +979,7 @@ begin
                   join public.trip_expenses e on e.id = s.expense_id
                   where e.trip_id = v_trip.id), '[]'::jsonb),
     'settlements',
-      coalesce((select jsonb_agg(to_jsonb(st) order by st.created_at)
+      coalesce((select jsonb_agg(to_jsonb(st) - array['client_id'] order by st.created_at)
                   from public.trip_settlements st where st.trip_id = v_trip.id), '[]'::jsonb)
   ) into v_result;
 
@@ -1245,6 +1245,37 @@ begin
 end;
 $$;
 
+-- 4.14 request_join_from_share -------------------------------------------
+-- A guest who looked at a view-only link and signs up uses this to get the invite
+-- code. The guest payload itself never contains it. Needs a logged-in user and an
+-- enabled, valid share token.
+create or replace function public.request_join_from_share(p_token text)
+returns text
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_code text;
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated' using errcode = '28000';
+  end if;
+  if p_token is null or length(p_token) = 0 or length(p_token) > 128 then
+    raise exception 'This link no longer works' using errcode = 'P0002';
+  end if;
+
+  select t.invite_code into v_code
+    from public.trips t
+    where t.share_token = p_token and t.share_enabled;
+  if v_code is null then
+    raise exception 'This link no longer works' using errcode = 'P0002';
+  end if;
+  return v_code;
+end;
+$$;
+
 -- --------------------------------------------
 -- 5. Grants (explicit; functions are not executable by PUBLIC by default)
 -- --------------------------------------------
@@ -1262,6 +1293,7 @@ revoke all on function public.record_settlement(uuid, uuid, uuid, numeric, uuid)
 revoke all on function public.add_trip_member(uuid, text)                                   from public;
 revoke all on function public.create_trip_category(uuid, text, text, text)                  from public;
 revoke all on function public.preview_trip_invite(text)                                     from public;
+revoke all on function public.request_join_from_share(text)                                 from public;
 
 grant execute on function public.create_trip(text, text, date, date, numeric, text[])       to authenticated;
 grant execute on function public.join_trip(text, uuid)                                      to authenticated;
@@ -1277,6 +1309,7 @@ grant execute on function public.record_settlement(uuid, uuid, uuid, numeric, uu
 grant execute on function public.add_trip_member(uuid, text)                                to authenticated;
 grant execute on function public.create_trip_category(uuid, text, text, text)               to authenticated;
 grant execute on function public.preview_trip_invite(text)                                  to authenticated;
+grant execute on function public.request_join_from_share(text)                              to authenticated;
 
 -- --------------------------------------------
 -- 6. Realtime: every table of the open trip. FULL replica identity so that DELETE

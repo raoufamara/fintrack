@@ -11,7 +11,7 @@ insert into auth.users (id, email) values
   ('00000000-0000-0000-0000-00000000000c', 'c@test.io');
 
 create temp table ctx (k text primary key, v text);
-grant all on ctx to authenticated;
+grant all on ctx to authenticated, anon;
 
 create or replace function pg_temp.as_user(u text) returns void language plpgsql as $$
 begin
@@ -50,6 +50,7 @@ insert into ctx select 'ma', id::text from public.trip_members where user_id is 
 insert into ctx select 'sara', id::text from public.trip_members where display_name = 'Sara';
 insert into ctx select 'cat', id::text from public.trip_categories where key = 'food';
 insert into ctx select 'code', invite_code from public.trips;
+insert into ctx select 'token', share_token from public.trips;
 
 -- 1. Direct writes that must be rejected for a member.
 select pg_temp.must_fail('insert expense', format($f$insert into trip_expenses (trip_id, category_id, title, amount, currency, paid_by, created_by) values (%L, %L, 'x', 1, 'EUR', %L, %L)$f$, (select v from ctx where k='trip')::uuid, (select v from ctx where k='cat')::uuid, (select v from ctx where k='ma')::uuid, '00000000-0000-0000-0000-00000000000a'));
@@ -166,6 +167,117 @@ set local role anon;
 do $$ begin
   begin perform public.preview_trip_invite('x'); raise exception 'anon can preview invites';
   exception when insufficient_privilege then null; end;
+end $$;
+reset role;
+
+-- 6. Guest view-only link (anon): only get_shared_trip is callable, and its payload is stripped.
+-- A hidden category with an expense, a settlement and an archived flag must all come through.
+select pg_temp.as_user('00000000-0000-0000-0000-00000000000a');
+set local role authenticated;
+do $$
+declare
+  v_trip uuid := (select v from ctx where k = 'trip')::uuid;
+  v_ma uuid := (select v from ctx where k = 'ma')::uuid;
+  v_sara uuid := (select v from ctx where k = 'sara')::uuid;
+  v_hidden uuid;
+  v_exp uuid;
+begin
+  v_hidden := public.create_trip_category(v_trip, 'Secret spa', 'sparkles', 'pink');
+  v_exp := public.upsert_trip_expense(
+    jsonb_build_object('trip_id', v_trip, 'category_id', v_hidden, 'title', 'Spa day', 'amount', 40, 'currency', 'EUR',
+                       'paid_by', v_ma, 'client_id', '88888888-8888-8888-8888-888888888888',
+                       'place_name', 'Spa', 'place_city', 'Lisbon', 'place_lat', 38.7, 'place_lng', -9.1, 'place_provider_id', 'N77'),
+    jsonb_build_array(jsonb_build_object('member_id', v_ma, 'amount', 20), jsonb_build_object('member_id', v_sara, 'amount', 20)));
+  update public.trip_categories set hidden_at = now() where id = v_hidden;
+  update public.trips set archived_at = now() where id = v_trip;
+  perform public.record_settlement(v_trip, v_sara, v_ma, 3, '77777777-7777-7777-7777-777777777777');
+end $$;
+reset role;
+
+set local role anon;
+do $$
+declare
+  v_pay jsonb;
+  v_token text := (select v from ctx where k = 'token');
+  v_text text;
+begin
+  v_pay := public.get_shared_trip(v_token);
+  if v_pay is null then raise exception 'anon could not read an enabled share'; end if;
+  v_text := v_pay::text;
+
+  if (v_pay->'trip') ?| array['invite_code', 'share_token', 'created_by'] then raise exception 'trip leaks private keys'; end if;
+  if (v_pay->'expenses'->0) ?| array['created_by', 'client_id', 'place_lat', 'place_lng', 'place_provider_id'] then raise exception 'expense leaks private keys'; end if;
+  if (v_pay->'settlements'->0) ?| array['client_id'] then raise exception 'settlement leaks client_id'; end if;
+  if (select array_agg(k order by k) from jsonb_object_keys(v_pay->'members'->0) k) <> array['color', 'display_name', 'id'] then
+    raise exception 'members expose more than id, display_name and color';
+  end if;
+  if v_text ~ 'user_id' or v_text ~ '@' or v_text ~ (select v from ctx where k = 'code') then
+    raise exception 'payload mentions a user id, an email or the invite code';
+  end if;
+  if v_text ~ '38\.7' or v_text ~ 'N77' then raise exception 'payload mentions coordinates or the provider id'; end if;
+
+  -- What the read-only UI needs.
+  if v_pay->>'shared_by' is null then raise exception 'missing shared_by'; end if;
+  if v_pay->'trip'->>'archived_at' is null then raise exception 'archived_at missing'; end if;
+  if v_pay->'trip'->>'default_currency' is null then raise exception 'default_currency missing'; end if;
+  if not exists (select 1 from jsonb_array_elements(v_pay->'categories') c where c->>'name' = 'Secret spa' and c->>'hidden_at' is not null) then
+    raise exception 'hidden category with expenses is missing';
+  end if;
+  if jsonb_array_length(v_pay->'settlements') < 1 then raise exception 'settlements missing'; end if;
+  if jsonb_array_length(v_pay->'shares') < 2 then raise exception 'shares missing'; end if;
+
+  if public.get_shared_trip('not-a-token') is not null then raise exception 'unknown token returned data'; end if;
+
+  begin perform public.set_share_enabled(gen_random_uuid(), false); raise exception 'anon can toggle sharing';
+  exception when insufficient_privilege then null; end;
+  begin perform public.rotate_share_token(gen_random_uuid()); raise exception 'anon can rotate tokens';
+  exception when insufficient_privilege then null; end;
+  begin perform public.request_join_from_share(v_token); raise exception 'anon can request the invite code';
+  exception when insufficient_privilege then null; end;
+  begin perform public.join_trip('x'); raise exception 'anon can join';
+  exception when insufficient_privilege then null; end;
+end $$;
+reset role;
+
+-- A member disables sharing: the link is dead and the invite code stays private.
+select pg_temp.as_user('00000000-0000-0000-0000-00000000000a');
+set local role authenticated;
+select public.set_share_enabled((select v from ctx where k = 'trip')::uuid, false);
+do $$
+declare
+  v_token text := (select v from ctx where k = 'token');
+begin
+  begin perform public.request_join_from_share(v_token); raise exception 'disabled share handed out the invite code';
+  exception when sqlstate 'P0002' then null; end;
+end $$;
+reset role;
+set local role anon;
+do $$ begin
+  if public.get_shared_trip((select v from ctx where k = 'token')) is not null then raise exception 'disabled share still readable'; end if;
+end $$;
+reset role;
+
+-- Re-enable, then rotate: the old token is dead, the new one works, and a logged-in user gets the invite code.
+select pg_temp.as_user('00000000-0000-0000-0000-00000000000a');
+set local role authenticated;
+select public.set_share_enabled((select v from ctx where k = 'trip')::uuid, true);
+insert into ctx select 'newtoken', public.rotate_share_token((select v from ctx where k = 'trip')::uuid);
+reset role;
+set local role anon;
+do $$ begin
+  if public.get_shared_trip((select v from ctx where k = 'token')) is not null then raise exception 'rotated token still works'; end if;
+  if public.get_shared_trip((select v from ctx where k = 'newtoken')) is null then raise exception 'new token does not work'; end if;
+end $$;
+reset role;
+select pg_temp.as_user('00000000-0000-0000-0000-00000000000c');
+set local role authenticated;
+do $$
+begin
+  if public.request_join_from_share((select v from ctx where k = 'newtoken')) <> (select v from ctx where k = 'code') then
+    raise exception 'request_join_from_share did not return the invite code';
+  end if;
+  begin perform public.request_join_from_share((select v from ctx where k = 'token')); raise exception 'old token handed out the code';
+  exception when sqlstate 'P0002' then null; end;
 end $$;
 reset role;
 
