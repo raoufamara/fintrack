@@ -1,12 +1,15 @@
 import { createContext, useContext } from 'react'
 import { useStore } from 'zustand'
 import type { FxService } from '../services/fxService'
+import type { GeolocationSource, PlacesProvider } from '../services/placesService'
 import type { TripsState, TripsStore } from './tripStore'
 
 export interface TripsContextValue {
   store: TripsStore
   currentUserId: string
   fx: FxService
+  places: PlacesProvider
+  geolocation: GeolocationSource
 }
 
 export const TripsContext = createContext<TripsContextValue | null>(null)
@@ -31,4 +34,12 @@ export function useCurrentUserId(): string {
 
 export function useFx(): FxService {
   return useTripsContext().fx
+}
+
+export function usePlaces(): PlacesProvider {
+  return useTripsContext().places
+}
+
+export function useGeolocation(): GeolocationSource {
+  return useTripsContext().geolocation
 }

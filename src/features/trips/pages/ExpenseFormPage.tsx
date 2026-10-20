@@ -5,6 +5,7 @@ import { BottomSheet } from '../components/BottomSheet'
 import { CategoryEditSheet } from '../components/CategoryEditSheet'
 import { CategoryIcon } from '../components/CategoryIcon'
 import { CurrencySheet } from '../components/CurrencySheet'
+import { LocationField } from '../components/LocationField'
 import { PayerSheet } from '../components/PayerSheet'
 import { ErrorState, Screen, Spinner, TopBar } from '../components/Screen'
 import { SplitSheet } from '../components/SplitSheet'
@@ -13,6 +14,7 @@ import { formatMoney, minorUnits, toMinor } from '../lib/currency'
 import { todayISO } from '../lib/dates'
 import { validateExpenseForm } from '../lib/validation'
 import { splitAmount, toDefault } from '../lib/money'
+import { placeFromExpense, type PlaceResult } from '../lib/places'
 import { formatAge, formatRate, type FxRate } from '../services/fxService'
 import type { TripSnapshot } from '../services/TripsRepository'
 import { useCurrentUserId, useFx, useTripsStore, useTripsStoreApi } from '../store/TripsContext'
@@ -96,6 +98,9 @@ function ExpenseForm({ snapshot, expenseId }: { snapshot: TripSnapshot; expenseI
   const [manualRate, setManualRate] = useState<string | null>(
     draft ? draft.manualRate : existing?.fx_source === 'manual' && existing.fx_rate !== null ? String(existing.fx_rate) : null,
   )
+  const [place, setPlace] = useState<PlaceResult | null>(
+    draft ? draft.place : existing ? placeFromExpense(existing) : null,
+  )
   const [submitted, setSubmitted] = useState(false)
   const [sheet, setSheet] = useState<'payer' | 'split' | 'delete' | 'category' | 'currency' | null>(null)
 
@@ -114,6 +119,19 @@ function ExpenseForm({ snapshot, expenseId }: { snapshot: TripSnapshot; expenseI
       cancelled = true
     }
   }, [fx, currency, defaultCurrency, date, lookupKey, storedRateApplies])
+
+  const stashDraft = () =>
+    storeApi.getState().saveDraft(draftKey, {
+      amount,
+      title,
+      categoryId,
+      paidBy,
+      splitIds,
+      date,
+      currency,
+      manualRate,
+      place,
+    })
 
   const manualValue = manualRate !== null && Number(manualRate) > 0 ? Number(manualRate) : null
   const cached: FxRate | null =
@@ -188,6 +206,7 @@ function ExpenseForm({ snapshot, expenseId }: { snapshot: TripSnapshot; expenseI
       fxRate: effective?.rate ?? null,
       fxSource: effective && effective.source !== 'same' ? effective.source : null,
       fxDate: effective?.tableDate ?? null,
+      place,
     })
     navigate(`/trips/${trip.id}`, { replace: true })
   }
@@ -300,16 +319,7 @@ function ExpenseForm({ snapshot, expenseId }: { snapshot: TripSnapshot; expenseI
               <button
                 type="button"
                 onClick={() => {
-                  storeApi.getState().saveDraft(draftKey, {
-                    amount,
-                    title,
-                    categoryId,
-                    paidBy,
-                    splitIds,
-                    date,
-                    currency,
-                    manualRate,
-                  })
+                  stashDraft()
                   navigate(`/trips/${trip.id}/categories`)
                 }}
                 className="h-9 px-1 text-[13px] font-bold text-primary"
@@ -387,6 +397,15 @@ function ExpenseForm({ snapshot, expenseId }: { snapshot: TripSnapshot; expenseI
               {show.date}
             </span>
           )}
+
+          <LocationField
+            place={place}
+            onChange={setPlace}
+            onSearch={() => {
+              stashDraft()
+              navigate(`/trips/${trip.id}/location`, { state: { draftKey } })
+            }}
+          />
         </div>
 
         <div className="sticky bottom-0 mt-auto border-t border-gray-100 bg-background px-4 pb-5 pt-3">

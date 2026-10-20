@@ -1,5 +1,7 @@
+import { MapPin } from 'lucide-react'
 import { expenseTotalDefault } from '../lib/balances'
 import { formatMoney, toMinor } from '../lib/currency'
+import { placeLabel } from '../lib/places'
 import type { TripCategory, TripExpense } from '../types'
 import { CategoryIcon } from './CategoryIcon'
 
@@ -13,7 +15,7 @@ interface ExpenseRowProps {
 
 export function ExpenseRow({ expense, category, payerName, defaultCurrency, onOpen }: ExpenseRowProps) {
   const total = expenseTotalDefault(expense, defaultCurrency)
-  const place = expense.place_name ?? expense.place_city
+  const place = placeLabel(expense.place_name, expense.place_city)
   return (
     <button
       type="button"
@@ -23,9 +25,18 @@ export function ExpenseRow({ expense, category, payerName, defaultCurrency, onOp
       <CategoryIcon icon={category?.icon ?? 'tag'} color={category?.color ?? 'grey'} />
       <span className="flex min-w-0 flex-1 flex-col gap-1">
         <span className="truncate text-[15px] font-bold">{expense.title}</span>
-        <span className="truncate text-xs text-text-muted">
-          {category ? `${category.name} · ` : ''}
-          {payerName} paid{place ? ` · ${place}` : ''}
+        <span className="flex items-center gap-1 overflow-hidden whitespace-nowrap text-xs text-text-muted">
+          <span className="truncate">
+            {category ? `${category.name} · ` : ''}
+            {payerName} paid
+          </span>
+          {place && (
+            <>
+              <span aria-hidden="true">·</span>
+              <MapPin size={12} aria-hidden="true" className="shrink-0" />
+              <span className="truncate">{place}</span>
+            </>
+          )}
         </span>
       </span>
       <span className="flex shrink-0 flex-col items-end gap-0.5">

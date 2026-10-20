@@ -1,5 +1,7 @@
+import { MapPin } from 'lucide-react'
 import { formatMoney } from '../lib/currency'
-import type { FilterResult, TripCategory, TripExpenseFilter, TripMember } from '../types'
+import { NO_LOCATION, placeKey } from '../lib/filter'
+import type { FilterResult, TripCategory, TripExpense, TripExpenseFilter, TripMember } from '../types'
 import { BottomSheet } from './BottomSheet'
 
 interface FilterSheetProps {
@@ -11,6 +13,8 @@ interface FilterSheetProps {
   /** Result of applying `filter`; drives the CTA text. */
   result: FilterResult
   categories: readonly TripCategory[]
+  /** All expenses of the trip: the place chips list every place used on it. */
+  expenses: readonly TripExpense[]
   members: readonly TripMember[]
   defaultCurrency: string
   /** Trip dates, used to clamp the date fields. */
@@ -37,6 +41,7 @@ export function FilterSheet({
   onReset,
   result,
   categories,
+  expenses,
   members,
   defaultCurrency,
   tripStart,
@@ -57,6 +62,13 @@ export function FilterSheet({
         : [...filter.categoryIds, id],
     })
   const n = result.items.length
+  const placeKeys = [...new Set(expenses.map(placeKey))].filter((k) => k !== NO_LOCATION).sort((a, b) => a.localeCompare(b))
+  const hasUnlocated = expenses.some((e) => placeKey(e) === NO_LOCATION)
+  const togglePlace = (key: string) =>
+    onChange({
+      ...filter,
+      places: filter.places.includes(key) ? filter.places.filter((x) => x !== key) : [...filter.places, key],
+    })
 
   return (
     <BottomSheet
@@ -95,7 +107,40 @@ export function FilterSheet({
         </div>
       </div>
 
-      {/* Location facet slot (Phase 5): city chips with counts plus a dashed "No location" chip go here. */}
+      {(placeKeys.length > 0 || hasUnlocated) && (
+        <div className="flex flex-col gap-2" role="group" aria-label="Location">
+          <span className="text-[13px] font-extrabold text-gray-700">Location</span>
+          <div className="flex flex-wrap gap-2">
+            {placeKeys.map((key) => {
+              const on = filter.places.includes(key)
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  aria-pressed={on}
+                  onClick={() => togglePlace(key)}
+                  className={`${chip} ${on ? 'border-primary bg-primary-tint text-primary' : off}`}
+                >
+                  <MapPin size={13} aria-hidden="true" />
+                  {key}
+                  <span className={on ? 'text-primary/80' : 'text-[#8A8A8A]'}>{result.countByPlace[key] ?? 0}</span>
+                </button>
+              )
+            })}
+            {hasUnlocated && (
+              <button
+                type="button"
+                aria-pressed={filter.places.includes(NO_LOCATION)}
+                onClick={() => togglePlace(NO_LOCATION)}
+                className={`${chip} border-dashed ${filter.places.includes(NO_LOCATION) ? 'border-primary bg-primary-tint text-primary' : 'border-gray-300 bg-surface text-text-muted'}`}
+              >
+                No location
+                <span className="text-[#8A8A8A]">{result.countByPlace[NO_LOCATION] ?? 0}</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-col gap-2" role="group" aria-label="Paid by">
         <span className="text-[13px] font-extrabold text-gray-700">Paid by</span>

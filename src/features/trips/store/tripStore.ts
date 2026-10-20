@@ -1,6 +1,7 @@
 import { createStore, type StoreApi } from 'zustand/vanilla'
 import { fromMinor } from '../lib/currency'
 import { amountDefault } from '../lib/money'
+import { placeToFields, type PlaceResult } from '../lib/places'
 import { createNullFxService, type FxService } from '../services/fxService'
 import { isDuplicateCategoryName, CATEGORY_NAME_MAX } from '../lib/categories'
 import {
@@ -43,6 +44,8 @@ export interface SaveExpenseInput {
   fxRate?: number | null
   fxSource?: FxSource | null
   fxDate?: string | null
+  /** The picked place; null clears it; undefined keeps an edited expense's place. */
+  place?: PlaceResult | null
 }
 
 /** Unsaved expense form, kept while the user visits another screen (e.g. Categories). */
@@ -56,6 +59,8 @@ export interface ExpenseDraft {
   currency: string
   /** Typed rate text when the user overrode the cached rate. */
   manualRate: string | null
+  /** Place picked so far, or null for none. */
+  place: PlaceResult | null
 }
 
 export interface CategoryResult {
@@ -76,6 +81,8 @@ export interface TripsState {
   tripError: Record<string, string>
   toast: Toast | null
   drafts: Record<string, ExpenseDraft>
+  /** Last place found with the current-location button, kept for this session. */
+  currentPlace: PlaceResult | null
 
   loadTrips: () => Promise<void>
   loadTrip: (tripId: string) => Promise<void>
@@ -87,6 +94,7 @@ export interface TripsState {
   /** `moveTo` is required when the category has expenses. */
   deleteCategory: (tripId: string, categoryId: string, moveTo: string | null) => Promise<CategoryResult>
   reorderCategories: (tripId: string, orderedIds: string[]) => Promise<CategoryResult>
+  setCurrentPlace: (place: PlaceResult | null) => void
   saveDraft: (key: string, draft: ExpenseDraft) => void
   clearDraft: (key: string) => void
   /** Converts pending expenses (no rate yet) with cached or fetched rates; never touches manual rates. Returns how many. */
@@ -150,6 +158,7 @@ export function createTripStore(repository: TripsRepository, fx: FxService = cre
       tripError: {},
       toast: null,
       drafts: {},
+      currentPlace: null,
 
       async loadTrips() {
         set({ listStatus: 'loading', listError: null })
@@ -251,6 +260,7 @@ export function createTripStore(repository: TripsRepository, fx: FxService = cre
           split_mode: input.splitMode,
           date: input.date,
           note: input.note ?? null,
+          ...(input.place === undefined ? {} : placeToFields(input.place)),
           updated_at: now,
         }
         const shares: TripExpenseShare[] = [...input.shares].map(([member_id, minor]) => ({
@@ -408,6 +418,10 @@ export function createTripStore(repository: TripsRepository, fx: FxService = cre
           putCategories(tripId, previous)
           return failure(err, 'reorder the categories')
         }
+      },
+
+      setCurrentPlace(place) {
+        set({ currentPlace: place })
       },
 
       saveDraft(key, draft) {

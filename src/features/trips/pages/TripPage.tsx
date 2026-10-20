@@ -8,7 +8,7 @@ import { MemberAvatar } from '../components/MemberAvatar'
 import { ErrorState, Screen, Spinner } from '../components/Screen'
 import { formatMoney, toMinor } from '../lib/currency'
 import { formatDay, formatRange, todayISO } from '../lib/dates'
-import { countActiveFilters, EMPTY_FILTER, filterExpenses, parseFilter, serializeFilter } from '../lib/filter'
+import { countActiveFilters, EMPTY_FILTER, NO_LOCATION, filterExpenses, parseFilter, serializeFilter } from '../lib/filter'
 import type { TripExpense, TripExpenseFilter } from '../types'
 import { useCurrentUserId, useTripsStore } from '../store/TripsContext'
 import { findCurrentMember, sortExpenses, summarizeTrip, usedCategoriesBySpend } from '../store/selectors'
@@ -133,6 +133,13 @@ export function TripPage() {
   const activeCount = countActiveFilters(filter)
   const filterActive = filter.categoryIds.length > 0 || activeCount > 0 || filter.q !== ''
   const pills: Array<{ key: string; label: string; remove: TripExpenseFilter }> = []
+  for (const p of filter.places) {
+    pills.push({
+      key: `place:${p}`,
+      label: p === NO_LOCATION ? 'No location' : p,
+      remove: { ...filter, places: filter.places.filter((x) => x !== p) },
+    })
+  }
   if (filter.payer) pills.push({ key: 'payer', label: `${memberName(filter.payer)} paid`, remove: { ...filter, payer: null } })
   if (filter.mine) pills.push({ key: 'mine', label: 'Only mine', remove: { ...filter, mine: false } })
   if (filter.from || filter.to) {
@@ -303,6 +310,20 @@ export function TripPage() {
                 </button>
               </div>
             )}
+            {result.hiddenNoLocationCount > 0 && (
+              <div className="rounded-[12px] bg-warning-light px-3 py-2.5 text-xs font-semibold text-[#6B4400]">
+                {result.hiddenNoLocationCount}{' '}
+                {result.hiddenNoLocationCount === 1 ? 'expense without a location is' : 'expenses without a location are'} hidden by
+                the location filter.{' '}
+                <button
+                  type="button"
+                  onClick={() => updateFilter({ ...filter, places: [...filter.places, NO_LOCATION] })}
+                  className="font-extrabold underline"
+                >
+                  Include them
+                </button>
+              </div>
+            )}
             <div className="flex items-baseline justify-between px-0.5 pt-1">
               <span className="text-xs font-bold text-text-muted">
                 {result.items.length} {result.items.length === 1 ? 'expense' : 'expenses'}
@@ -360,6 +381,7 @@ export function TripPage() {
         onReset={() => updateFilter({ ...EMPTY_FILTER, q: filter.q })}
         result={result}
         categories={[...categories].sort((a, b) => a.sort_order - b.sort_order)}
+        expenses={expenses}
         members={members}
         defaultCurrency={currency}
         tripStart={trip.start_date}

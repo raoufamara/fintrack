@@ -1,5 +1,11 @@
 import { useEffect, useMemo, type ReactNode } from 'react'
 import { createNullFxService, type FxService } from '../services/fxService'
+import {
+  createNullGeolocation,
+  createNullPlacesProvider,
+  type GeolocationSource,
+  type PlacesProvider,
+} from '../services/placesService'
 import type { TripsRepository } from '../services/TripsRepository'
 import { TripsContext, type TripsContextValue } from './TripsContext'
 import { createTripStore } from './tripStore'
@@ -12,16 +18,26 @@ import { createTripStore } from './tripStore'
 export function TripsProvider({
   repository,
   fx,
+  places,
+  geolocation,
   children,
 }: {
   repository: TripsRepository
   fx?: FxService
+  places?: PlacesProvider
+  geolocation?: GeolocationSource
   children: ReactNode
 }) {
   const value = useMemo<TripsContextValue>(() => {
     const service = fx ?? createNullFxService()
-    return { store: createTripStore(repository, service), currentUserId: repository.currentUserId, fx: service }
-  }, [repository, fx])
+    return {
+      store: createTripStore(repository, service),
+      currentUserId: repository.currentUserId,
+      fx: service,
+      places: places ?? createNullPlacesProvider(),
+      geolocation: geolocation ?? createNullGeolocation(),
+    }
+  }, [repository, fx, places, geolocation])
 
   useEffect(() => {
     const onOnline = () => void value.store.getState().syncRates()

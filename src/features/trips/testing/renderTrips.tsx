@@ -5,6 +5,7 @@ import { todayISO } from '../lib/dates'
 import { buildLisbonPortoSeed } from '../services/memorySeed'
 import { createMemoryTripsRepository } from '../services/memoryTripsRepository'
 import type { FxService } from '../services/fxService'
+import type { GeolocationSource, PlacesProvider } from '../services/placesService'
 import type { TripSnapshot, TripsRepository } from '../services/TripsRepository'
 import { tripsRoutes } from '../routes'
 import { TripsProvider } from '../store/TripsProvider'
@@ -24,7 +25,11 @@ function LocationProbe() {
 /** Renders the real Trips routes against a memory repository. Test-only helper. */
 export function renderTrips(
   path: string,
-  opts: { seed?: TripSnapshot[]; repository?: Partial<TripsRepository>; fx?: FxService } = {},
+  opts: { seed?: TripSnapshot[]; repository?: Partial<TripsRepository>
+    fx?: FxService
+    places?: PlacesProvider
+    geolocation?: GeolocationSource
+  } = {},
 ) {
   const base = createMemoryTripsRepository({
     currentUserId: TEST_USER,
@@ -32,7 +37,7 @@ export function renderTrips(
   })
   const repository: TripsRepository = { ...base, ...opts.repository }
   const view = render(
-    <TripsProvider repository={repository} fx={opts.fx}>
+    <TripsProvider repository={repository} fx={opts.fx} places={opts.places} geolocation={opts.geolocation}>
       <MemoryRouter initialEntries={[path]}>
         <Routes>{tripsRoutes}</Routes>
         <LocationProbe />

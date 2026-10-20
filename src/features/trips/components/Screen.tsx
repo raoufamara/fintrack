@@ -5,7 +5,7 @@ import { ChevronLeft, X } from 'lucide-react'
 /** Full-screen page that covers the app's tab bar. Content is capped at phone width. */
 export function Screen({ children }: { children: ReactNode }) {
   return (
-    <div className="fixed inset-0 z-40 overflow-y-auto bg-background">
+    <div className="fixed inset-x-0 bottom-0 top-[var(--trips-top-inset,0px)] z-40 overflow-y-auto bg-background">
       <div className="relative mx-auto flex min-h-full w-full max-w-[430px] flex-col bg-background">
         {children}
       </div>

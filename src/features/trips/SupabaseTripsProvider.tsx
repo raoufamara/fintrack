@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { createHttpRateProvider } from './services/fxProviders'
 import { createFxService } from './services/fxService'
 import { createIdbFxStorage } from './services/fxStorage'
+import { createBrowserGeolocation, createPhotonProvider } from './services/placesService'
 import { createSupabaseTripsRepository } from './services/supabaseTripsRepository'
 import { TripsProvider } from './store/TripsProvider'
 
@@ -30,9 +31,11 @@ export function SupabaseTripsProvider() {
       }),
     [],
   )
+  const places = useMemo(() => createPhotonProvider(), [])
+  const geolocation = useMemo(() => createBrowserGeolocation(), [])
   if (!repository) return null
   return (
-    <TripsProvider repository={repository} fx={fx}>
+    <TripsProvider repository={repository} fx={fx} places={places} geolocation={geolocation}>
       <Outlet />
     </TripsProvider>
   )
