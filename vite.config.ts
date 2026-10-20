@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
   // NEXT_PUBLIC_SUPABASE_* are the public URL and key that the Vercel ↔ Supabase
@@ -12,6 +13,38 @@ export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
+    // Installable app ("Add to Home Screen" on iPhone) that opens offline.
+    // The service worker precaches only the app's own files; Supabase, the
+    // exchange-rate API and place search are cross-origin and always go to
+    // the network (rates and trips have their own IndexedDB caches).
+    VitePWA({
+      registerType: 'autoUpdate',
+      injectRegister: 'script-defer',
+      includeAssets: ['fintrack.svg', 'icons/apple-touch-icon.png'],
+      manifest: {
+        name: 'Fintrack',
+        short_name: 'Fintrack',
+        description: 'Budgets and shared trip expenses',
+        start_url: '/',
+        scope: '/',
+        display: 'standalone',
+        background_color: '#F8F9FA',
+        theme_color: '#F8F9FA',
+        icons: [
+          { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+          { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
+          { src: '/icons/maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+        ],
+      },
+      workbox: {
+        globPatterns: ['**/*.{js,css,html,svg,png,ico,webmanifest}'],
+        navigateFallback: '/index.html',
+        // The demo page is its own app; never answer it with the main shell.
+        navigateFallbackDenylist: [/^\/trips-demo\.html/],
+        cleanupOutdatedCaches: true,
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+      },
+    }),
   ],
   build: {
     rollupOptions: {
