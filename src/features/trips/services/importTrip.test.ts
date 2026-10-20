@@ -133,3 +133,24 @@ describe('memory repository importTrip', () => {
     await expect(repo.importTrip(payload())).rejects.toBeInstanceOf(NetworkError)
   })
 })
+
+describe('store importTrip', () => {
+  it('reports success once the server created the trip, even if reloading it fails', async () => {
+    const { createTripStore } = await import('../store/tripStore')
+    const base = fresh()
+    const store = createTripStore({
+      ...base,
+      getTrip: () => Promise.reject(new NetworkError('connection dropped')),
+    })
+    const result = await store.getState().importTrip(payload())
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(await base.getTrip(result.id)).toBeTruthy()
+  })
+
+  it('reports a failure when the import itself fails', async () => {
+    const { createTripStore } = await import('../store/tripStore')
+    const store = createTripStore(createMemoryTripsRepository({ currentUserId: 'u1', seed: [], isOnline: () => false }))
+    const result = await store.getState().importTrip(payload())
+    expect(result).toMatchObject({ ok: false, offline: true })
+  })
+})

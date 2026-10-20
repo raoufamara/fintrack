@@ -362,19 +362,28 @@ export function createTripStore(
       },
 
       async importTrip(payload) {
+        let id: string
         try {
-          const id = await repository.importTrip(payload)
-          const snap = await repository.getTrip(id)
-          if (!snap) throw new Error('The trip was imported but could not be loaded.')
-          set((state) => ({
-            trips: { ...state.trips, [id]: snap },
-            tripOrder: [id, ...state.tripOrder.filter((t) => t !== id)],
-            tripStatus: { ...state.tripStatus, [id]: 'ready' },
-          }))
-          return { ok: true, id }
+          id = await repository.importTrip(payload)
         } catch (err) {
           return { ok: false, error: messageOf(err), offline: isNetworkError(err) }
         }
+        // The trip exists from here on. A failed reload must not be reported as a
+        // failed import (the user would retry and get a duplicate trip); the trip
+        // page loads it again when opened.
+        try {
+          const snap = await repository.getTrip(id)
+          if (snap) {
+            set((state) => ({
+              trips: { ...state.trips, [id]: snap },
+              tripOrder: [id, ...state.tripOrder.filter((t) => t !== id)],
+              tripStatus: { ...state.tripStatus, [id]: 'ready' },
+            }))
+          }
+        } catch {
+          // Ignored on purpose, see above.
+        }
+        return { ok: true, id }
       },
 
       async saveExpense(input) {
