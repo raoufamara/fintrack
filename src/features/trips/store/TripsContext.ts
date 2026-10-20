@@ -10,6 +10,8 @@ export interface TripsContextValue {
   fx: FxService
   places: PlacesProvider
   geolocation: GeolocationSource
+  /** The user's home currency (users.currency); the default "show in" currency. */
+  homeCurrency: string | null
 }
 
 export const TripsContext = createContext<TripsContextValue | null>(null)
@@ -42,4 +44,8 @@ export function usePlaces(): PlacesProvider {
 
 export function useGeolocation(): GeolocationSource {
   return useTripsContext().geolocation
+}
+
+export function useHomeCurrency(): string | null {
+  return useTripsContext().homeCurrency
 }

@@ -153,9 +153,10 @@ create table if not exists public.trip_settlements (
   trip_id uuid not null references public.trips(id) on delete cascade,
   from_member uuid not null references public.trip_members(id),
   to_member uuid not null references public.trip_members(id),
-  amount numeric(14,2) not null check (amount > 0),
+  amount numeric(14,3) not null check (amount > 0),
   currency char(3) not null,                      -- v1: always trip default_currency
   fx_rate numeric(20,10) not null default 1,
+  client_id uuid unique,                          -- idempotency key from the offline retry queue
   created_at timestamptz not null default now(),
   check (from_member <> to_member)
 );
@@ -1066,11 +1067,13 @@ $$;
 
 -- 4.10 record_settlement -------------------------------------------------
 -- A settlement is always recorded in the trip default currency (v1).
+-- Idempotent on p_client_id: a replayed request returns the settlement it created.
 create or replace function public.record_settlement(
   p_trip_id uuid,
   p_from uuid,
   p_to uuid,
-  p_amount numeric
+  p_amount numeric,
+  p_client_id uuid default null
 )
 returns uuid
 language plpgsql
@@ -1099,10 +1102,18 @@ begin
     raise exception 'Both members must belong to this trip' using errcode = '22023';
   end if;
 
+  if p_client_id is not null then
+    select st.id into v_id from public.trip_settlements st
+      where st.client_id = p_client_id and st.trip_id = p_trip_id;
+    if v_id is not null then
+      return v_id;
+    end if;
+  end if;
+
   select t.default_currency into v_currency from public.trips t where t.id = p_trip_id;
 
-  insert into public.trip_settlements (trip_id, from_member, to_member, amount, currency, fx_rate)
-  values (p_trip_id, p_from, p_to, round(p_amount, 2), v_currency, 1)
+  insert into public.trip_settlements (trip_id, from_member, to_member, amount, currency, fx_rate, client_id)
+  values (p_trip_id, p_from, p_to, round(p_amount, public.currency_minor_units(v_currency)), v_currency, 1, p_client_id)
   returning id into v_id;
   return v_id;
 end;
@@ -1195,6 +1206,45 @@ begin
 end;
 $$;
 
+-- 4.13 preview_trip_invite -----------------------------------------------
+-- Lets someone holding an invite code see which trip it is and which members are
+-- still unclaimed, before joining. Returns nothing else (no user ids, no tokens).
+create or replace function public.preview_trip_invite(p_code text)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_trip public.trips%rowtype;
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated' using errcode = '28000';
+  end if;
+
+  select * into v_trip
+    from public.trips t
+    where t.invite_code = lower(btrim(coalesce(p_code, '')));
+  if not found then
+    raise exception 'Invalid invite code' using errcode = 'P0002';
+  end if;
+
+  return jsonb_build_object(
+    'trip_id', v_trip.id,
+    'name', v_trip.name,
+    'start_date', v_trip.start_date,
+    'end_date', v_trip.end_date,
+    'default_currency', v_trip.default_currency,
+    'unclaimed', coalesce((
+      select jsonb_agg(jsonb_build_object('id', m.id, 'display_name', m.display_name) order by m.created_at, m.id)
+        from public.trip_members m
+        where m.trip_id = v_trip.id and m.user_id is null
+    ), '[]'::jsonb)
+  );
+end;
+$$;
+
 -- --------------------------------------------
 -- 5. Grants (explicit; functions are not executable by PUBLIC by default)
 -- --------------------------------------------
@@ -1208,9 +1258,10 @@ revoke all on function public.get_shared_trip(text)                             
 revoke all on function public.rotate_share_token(uuid)                                      from public;
 revoke all on function public.set_share_enabled(uuid, boolean)                              from public;
 revoke all on function public.delete_trip_expense(uuid)                                     from public;
-revoke all on function public.record_settlement(uuid, uuid, uuid, numeric)                  from public;
+revoke all on function public.record_settlement(uuid, uuid, uuid, numeric, uuid)           from public;
 revoke all on function public.add_trip_member(uuid, text)                                   from public;
 revoke all on function public.create_trip_category(uuid, text, text, text)                  from public;
+revoke all on function public.preview_trip_invite(text)                                     from public;
 
 grant execute on function public.create_trip(text, text, date, date, numeric, text[])       to authenticated;
 grant execute on function public.join_trip(text, uuid)                                      to authenticated;
@@ -1222,24 +1273,34 @@ grant execute on function public.get_shared_trip(text)                          
 grant execute on function public.rotate_share_token(uuid)                                   to authenticated;
 grant execute on function public.set_share_enabled(uuid, boolean)                           to authenticated;
 grant execute on function public.delete_trip_expense(uuid)                                  to authenticated;
-grant execute on function public.record_settlement(uuid, uuid, uuid, numeric)               to authenticated;
+grant execute on function public.record_settlement(uuid, uuid, uuid, numeric, uuid)        to authenticated;
 grant execute on function public.add_trip_member(uuid, text)                                to authenticated;
 grant execute on function public.create_trip_category(uuid, text, text, text)               to authenticated;
+grant execute on function public.preview_trip_invite(text)                                  to authenticated;
 
 -- --------------------------------------------
--- 6. Realtime (used from phase 6): expenses and categories of the open trip
+-- 6. Realtime: every table of the open trip. FULL replica identity so that DELETE
+-- events carry trip_id and pass the per-trip filters.
 -- --------------------------------------------
+alter table public.trips               replica identity full;
+alter table public.trip_members        replica identity full;
+alter table public.trip_categories     replica identity full;
+alter table public.trip_expenses       replica identity full;
+alter table public.trip_expense_shares replica identity full;
+alter table public.trip_settlements    replica identity full;
+
 do $$
+declare
+  v_table text;
 begin
   if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
-    if not exists (select 1 from pg_publication_tables
-                   where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'trip_expenses') then
-      alter publication supabase_realtime add table public.trip_expenses;
-    end if;
-    if not exists (select 1 from pg_publication_tables
-                   where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'trip_categories') then
-      alter publication supabase_realtime add table public.trip_categories;
-    end if;
+    foreach v_table in array array['trips', 'trip_members', 'trip_categories', 'trip_expenses',
+                                   'trip_expense_shares', 'trip_settlements'] loop
+      if not exists (select 1 from pg_publication_tables
+                     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = v_table) then
+        execute format('alter publication supabase_realtime add table public.%I', v_table);
+      end if;
+    end loop;
   end if;
 end
 $$;

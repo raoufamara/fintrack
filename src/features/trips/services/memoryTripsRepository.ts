@@ -1,23 +1,50 @@
 import { DEFAULT_CATEGORIES, isDuplicateCategoryName } from '../lib/categories'
 import { todayISO } from '../lib/dates'
 import { amountDefault } from '../lib/money'
-import type { Trip, TripCategory, TripExpense, TripExpenseShare, TripMember } from '../types'
+import type { Trip, TripCategory, TripExpense, TripExpenseShare, TripMember, TripSettlement } from '../types'
 import { newId } from './ids'
 import { buildLisbonPortoSeed } from './memorySeed'
 import {
   DUPLICATE_CODE,
+  NetworkError,
   RepositoryError,
   type NewTripInput,
   type TripSnapshot,
   type TripsRepository,
 } from './TripsRepository'
 
+/** Shared storage, so several repositories (several users or devices) can see the same trips. */
+export interface MemoryBackend {
+  db: Map<string, TripSnapshot>
+  listeners: Map<string, Set<() => void>>
+  /** Last serialised snapshot per trip, used to detect changes. */
+  seen: Map<string, string>
+}
+
+export function createMemoryBackend(seed: TripSnapshot[] = []): MemoryBackend {
+  const db = new Map<string, TripSnapshot>()
+  for (const snap of seed) db.set(snap.trip.id, structuredClone(snap))
+  const seen = new Map([...db].map(([id, snap]) => [id, JSON.stringify(snap)]))
+  return { db, listeners: new Map(), seen }
+}
+
 export interface MemoryRepositoryOptions {
   currentUserId: string
-  /** Initial data. Defaults to the Lisbon & Porto sample trip; pass [] for a blank slate. */
+  /** Initial data. Defaults to the Lisbon & Porto sample trip; pass [] for a blank slate. Ignored with `backend`. */
   seed?: TripSnapshot[]
+  /** Share storage with other repositories. */
+  backend?: MemoryBackend
   /** Simulated network delay in ms. */
   latencyMs?: number
+  /** Writes fail with a NetworkError while this returns false. Reads keep working (as if cached). */
+  isOnline?: () => boolean
+  /** Display name for members created by `joinTrip`. */
+  displayName?: string
+}
+
+export interface MemoryTripsRepository extends TripsRepository {
+  /** Changes a trip as if another device had, and notifies subscribers. Test and demo helper. */
+  simulateRemote(tripId: string, mutate: (snap: TripSnapshot) => void): void
 }
 
 const AVATAR_COLORS = ['#FD6FB8', '#93D4D9', '#FDAC62', '#D0E2FF', '#B9A1FF', '#A8E6A1', '#FFD36B', '#F7B2B2']
@@ -25,11 +52,28 @@ const AVATAR_COLORS = ['#FD6FB8', '#93D4D9', '#FDAC62', '#D0E2FF', '#B9A1FF', '#
 const clone = <T,>(value: T): T => structuredClone(value)
 
 /** In-memory implementation used by the demo and by tests. */
-export function createMemoryTripsRepository(options: MemoryRepositoryOptions): TripsRepository {
-  const { currentUserId, latencyMs = 0 } = options
-  const db = new Map<string, TripSnapshot>()
-  for (const snap of options.seed ?? [buildLisbonPortoSeed(currentUserId, todayISO())]) {
-    db.set(snap.trip.id, clone(snap))
+export function createMemoryTripsRepository(options: MemoryRepositoryOptions): MemoryTripsRepository {
+  const { currentUserId, latencyMs = 0, isOnline = () => true } = options
+  const backend =
+    options.backend ?? createMemoryBackend(options.seed ?? [buildLisbonPortoSeed(currentUserId, todayISO())])
+  const { db } = backend
+
+  const isMember = (snap: TripSnapshot) => snap.members.some((m) => m.user_id === currentUserId)
+  const requireTrip = (tripId: string): TripSnapshot => {
+    const snap = db.get(tripId)
+    if (!snap || !isMember(snap)) throw new RepositoryError('Not a member of this trip', '42501')
+    return snap
+  }
+
+  /** Tells subscribers of every trip that changed since the last time we looked. */
+  const notifyChanged = () => {
+    for (const [id, snap] of db) {
+      const json = JSON.stringify(snap)
+      if (backend.seen.get(id) !== json) {
+        backend.seen.set(id, json)
+        backend.listeners.get(id)?.forEach((cb) => cb())
+      }
+    }
   }
 
   const findCategory = (categoryId: string) => {
@@ -41,23 +85,136 @@ export function createMemoryTripsRepository(options: MemoryRepositoryOptions): T
   }
 
   const wait = () => (latencyMs > 0 ? new Promise<void>((r) => setTimeout(r, latencyMs)) : Promise.resolve())
+  /** Start of a write: simulated latency, then the network check. */
+  const write = async () => {
+    await wait()
+    if (!isOnline()) throw new NetworkError()
+  }
 
-  return {
+  const repo: MemoryTripsRepository = {
     currentUserId,
+
+    simulateRemote(tripId, mutate) {
+      const snap = db.get(tripId)
+      if (!snap) throw new Error('Trip not found')
+      mutate(snap)
+      notifyChanged()
+    },
+
+    subscribe(tripId, onChange) {
+      const set = backend.listeners.get(tripId) ?? new Set<() => void>()
+      set.add(onChange)
+      backend.listeners.set(tripId, set)
+      return () => {
+        set.delete(onChange)
+      }
+    },
+
+    async recordSettlement(settlement) {
+      await write()
+      const snap = requireTrip(settlement.trip_id)
+      if (snap.settlements.some((s) => s.client_id && s.client_id === settlement.client_id)) return
+      if (settlement.from_member === settlement.to_member) {
+        throw new RepositoryError('A settlement needs two different members', '22023')
+      }
+      if (!(settlement.amount > 0)) throw new RepositoryError('Amount must be positive', '22023')
+      const ids = new Set(snap.members.map((m) => m.id))
+      if (!ids.has(settlement.from_member) || !ids.has(settlement.to_member)) {
+        throw new RepositoryError('Both members must belong to this trip', '22023')
+      }
+      const stored: TripSettlement = { ...clone(settlement), currency: snap.trip.default_currency, fx_rate: 1 }
+      snap.settlements.push(stored)
+    },
+
+    async addMember(tripId, name) {
+      await write()
+      const snap = requireTrip(tripId)
+      const trimmed = name.trim()
+      if (trimmed.length < 1 || trimmed.length > 40) throw new RepositoryError('Name must be 1-40 characters', '22023')
+      const member: TripMember = {
+        id: newId(),
+        trip_id: tripId,
+        display_name: trimmed,
+        user_id: null,
+        color: AVATAR_COLORS[snap.members.length % AVATAR_COLORS.length] ?? '#DDDDDD',
+        display_currency: null,
+        created_at: new Date().toISOString(),
+      }
+      snap.members.push(member)
+      return member.id
+    },
+
+    async previewInvite(code) {
+      await wait()
+      const wanted = code.trim().toLowerCase()
+      const snap = [...db.values()].find((s) => s.trip.invite_code === wanted)
+      if (!snap) throw new RepositoryError('Invalid invite code', 'P0002')
+      return {
+        tripId: snap.trip.id,
+        name: snap.trip.name,
+        startDate: snap.trip.start_date,
+        endDate: snap.trip.end_date,
+        defaultCurrency: snap.trip.default_currency,
+        unclaimed: snap.members.filter((m) => m.user_id === null).map((m) => ({ id: m.id, displayName: m.display_name })),
+      }
+    },
+
+    async joinTrip(code, memberId) {
+      await write()
+      const wanted = code.trim().toLowerCase()
+      const snap = [...db.values()].find((s) => s.trip.invite_code === wanted)
+      if (!snap) throw new RepositoryError('Invalid invite code', 'P0002')
+      const existing = snap.members.find((m) => m.user_id === currentUserId)
+      if (existing) return existing.id
+      if (memberId) {
+        const target = snap.members.find((m) => m.id === memberId)
+        if (!target) throw new RepositoryError('Member not found in this trip', 'P0002')
+        if (target.user_id !== null) throw new RepositoryError('This member has already been claimed', DUPLICATE_CODE)
+        target.user_id = currentUserId
+        return target.id
+      }
+      const member: TripMember = {
+        id: newId(),
+        trip_id: snap.trip.id,
+        display_name: options.displayName ?? 'New member',
+        user_id: currentUserId,
+        color: AVATAR_COLORS[snap.members.length % AVATAR_COLORS.length] ?? '#DDDDDD',
+        display_currency: null,
+        created_at: new Date().toISOString(),
+      }
+      snap.members.push(member)
+      return member.id
+    },
+
+    async updateMyDisplayCurrency(memberId, currency) {
+      await write()
+      for (const snap of db.values()) {
+        const m = snap.members.find((x) => x.id === memberId)
+        if (m) {
+          if (m.user_id !== currentUserId) {
+            throw new RepositoryError('Only the member themself can change their display currency', '42501')
+          }
+          m.display_currency = currency
+          return
+        }
+      }
+      throw new RepositoryError('Member not found', 'P0002')
+    },
+
 
     async listTrips() {
       await wait()
-      return [...db.values()].map(clone)
+      return [...db.values()].filter(isMember).map(clone)
     },
 
     async getTrip(tripId) {
       await wait()
       const snap = db.get(tripId)
-      return snap ? clone(snap) : null
+      return snap && isMember(snap) ? clone(snap) : null
     },
 
     async createTrip(input: NewTripInput) {
-      await wait()
+      await write()
       const now = new Date().toISOString()
       const trip: Trip = {
         id: newId(),
@@ -101,7 +258,7 @@ export function createMemoryTripsRepository(options: MemoryRepositoryOptions): T
     },
 
     async saveExpense(expense: TripExpense, shares: TripExpenseShare[]) {
-      await wait()
+      await write()
       const snap = db.get(expense.trip_id)
       if (!snap) throw new Error('Trip not found')
       if (!snap.categories.some((c) => c.id === expense.category_id)) {
@@ -110,6 +267,12 @@ export function createMemoryTripsRepository(options: MemoryRepositoryOptions): T
       const sum = shares.reduce((acc, s) => acc + Math.round(s.amount * 1000), 0)
       if (sum !== Math.round(expense.amount * 1000)) {
         throw new Error('Shares must sum to the amount')
+      }
+      // Idempotent on client_id, like the server: a replay resolves to the expense it created.
+      const byClient = expense.client_id ? snap.expenses.find((e) => e.client_id === expense.client_id) : undefined
+      if (byClient && byClient.id !== expense.id) {
+        expense = { ...expense, id: byClient.id }
+        shares = shares.map((s) => ({ ...s, expense_id: byClient.id }))
       }
       // Mirror the server: same-currency expenses get rate 1, and amount_default is computed here.
       const same = expense.currency === snap.trip.default_currency
@@ -125,7 +288,7 @@ export function createMemoryTripsRepository(options: MemoryRepositoryOptions): T
     },
 
     async deleteExpense(expenseId: string) {
-      await wait()
+      await write()
       for (const snap of db.values()) {
         if (snap.expenses.some((e) => e.id === expenseId)) {
           snap.expenses = snap.expenses.filter((e) => e.id !== expenseId)
@@ -137,7 +300,7 @@ export function createMemoryTripsRepository(options: MemoryRepositoryOptions): T
     },
 
     async setDefaultCurrency(tripId, currency, rates) {
-      await wait()
+      await write()
       const snap = db.get(tripId)
       if (!snap) throw new Error('Trip not found')
       const old = snap.trip.default_currency
@@ -176,7 +339,7 @@ export function createMemoryTripsRepository(options: MemoryRepositoryOptions): T
     },
 
     async createCategory(tripId, input) {
-      await wait()
+      await write()
       const snap = db.get(tripId)
       if (!snap) throw new Error('Trip not found')
       const name = input.name.trim()
@@ -204,7 +367,7 @@ export function createMemoryTripsRepository(options: MemoryRepositoryOptions): T
     },
 
     async updateCategory(categoryId, patch) {
-      await wait()
+      await write()
       const found = findCategory(categoryId)
       if (!found) throw new Error('Category not found')
       const { snap, category } = found
@@ -229,7 +392,7 @@ export function createMemoryTripsRepository(options: MemoryRepositoryOptions): T
     },
 
     async deleteCategory(categoryId, moveTo) {
-      await wait()
+      await write()
       const found = findCategory(categoryId)
       if (!found) throw new Error('Category not found')
       const { snap, category } = found
@@ -249,7 +412,7 @@ export function createMemoryTripsRepository(options: MemoryRepositoryOptions): T
     },
 
     async reorderCategories(tripId, orderedIds) {
-      await wait()
+      await write()
       const snap = db.get(tripId)
       if (!snap) throw new Error('Trip not found')
       if (new Set(orderedIds).size !== orderedIds.length || orderedIds.some((id) => !snap.categories.some((c) => c.id === id))) {
@@ -265,4 +428,20 @@ export function createMemoryTripsRepository(options: MemoryRepositoryOptions): T
       })
     },
   }
+
+  // After every write, tell subscribers (other devices) about what changed.
+  const target = repo as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>
+  for (const name of [
+    'createTrip', 'saveExpense', 'deleteExpense', 'setDefaultCurrency', 'createCategory', 'updateCategory',
+    'deleteCategory', 'reorderCategories', 'recordSettlement', 'addMember', 'joinTrip', 'updateMyDisplayCurrency',
+  ]) {
+    const original = target[name]
+    if (!original) continue
+    target[name] = async (...args) => {
+      const result = await original(...args)
+      notifyChanged()
+      return result
+    }
+  }
+  return repo
 }

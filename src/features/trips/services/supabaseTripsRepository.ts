@@ -7,7 +7,7 @@ import type {
   TripMember,
   TripSettlement,
 } from '../types'
-import { RepositoryError, type NewTripInput, type TripSnapshot, type TripsRepository } from './TripsRepository'
+import { NetworkError, RepositoryError, type InvitePreview, type NewTripInput, type TripSnapshot, type TripsRepository } from './TripsRepository'
 
 /**
  * Supabase implementation. The client is injected, so this file never imports
@@ -28,7 +28,7 @@ export function createSupabaseTripsRepository(
     if (opts.tripId) query = query.eq(opts.column ?? 'trip_id', opts.tripId)
     if (opts.order) query = query.order(opts.order)
     const { data, error } = await query
-    if (error) throw new Error(error.message)
+    if (error) throw toError(error)
     return (data ?? []) as unknown as T[]
   }
 
@@ -72,10 +72,21 @@ export function createSupabaseTripsRepository(
     })
   }
 
+  /** Postgres errors carry a 5-character code; fetch failures do not. */
+  function toError(error: { message: string; code?: string }): RepositoryError {
+    const networkLike = !error.code && /fetch|network|timeout|offline|failed/i.test(error.message)
+    return networkLike ? new NetworkError(error.message) : new RepositoryError(error.message, error.code)
+  }
+
   async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
-    const { data, error } = await client.rpc(fn, args)
-    if (error) throw new RepositoryError(error.message, error.code)
-    return data as T
+    try {
+      const { data, error } = await client.rpc(fn, args)
+      if (error) throw toError(error)
+      return data as T
+    } catch (err) {
+      if (err instanceof TypeError) throw new NetworkError(err.message)
+      throw err
+    }
   }
 
   return {
@@ -131,6 +142,69 @@ export function createSupabaseTripsRepository(
       await rpc('delete_trip_expense', { p_expense_id: expenseId })
     },
 
+    async recordSettlement(settlement) {
+      await rpc('record_settlement', {
+        p_trip_id: settlement.trip_id,
+        p_from: settlement.from_member,
+        p_to: settlement.to_member,
+        p_amount: settlement.amount,
+        p_client_id: settlement.client_id ?? null,
+      })
+    },
+
+    addMember: (tripId, name) => rpc<string>('add_trip_member', { p_trip_id: tripId, p_name: name }),
+
+    async previewInvite(code) {
+      const raw = await rpc<{
+        trip_id: string
+        name: string
+        start_date: string | null
+        end_date: string | null
+        default_currency: string
+        unclaimed: Array<{ id: string; display_name: string }>
+      }>('preview_trip_invite', { p_code: code })
+      const preview: InvitePreview = {
+        tripId: raw.trip_id,
+        name: raw.name,
+        startDate: raw.start_date,
+        endDate: raw.end_date,
+        defaultCurrency: raw.default_currency,
+        unclaimed: raw.unclaimed.map((m) => ({ id: m.id, displayName: m.display_name })),
+      }
+      return preview
+    },
+
+    joinTrip: (code, memberId) => rpc<string>('join_trip', { p_code: code, p_member_id: memberId }),
+
+    async updateMyDisplayCurrency(memberId, currency) {
+      const { error } = await client.from('trip_members').update({ display_currency: currency }).eq('id', memberId)
+      if (error) throw toError(error)
+    },
+
+    subscribe(tripId, onChange) {
+      const channel = client.channel(`trip-${tripId}`)
+      const watched: Array<[string, string | null]> = [
+        ['trips', 'id'],
+        ['trip_members', 'trip_id'],
+        ['trip_categories', 'trip_id'],
+        ['trip_expenses', 'trip_id'],
+        ['trip_settlements', 'trip_id'],
+        // Shares have no trip_id: RLS limits the events to our trips, and a refetch is cheap.
+        ['trip_expense_shares', null],
+      ]
+      for (const [table, column] of watched) {
+        channel.on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table, ...(column ? { filter: `${column}=eq.${tripId}` } : {}) },
+          () => onChange(),
+        )
+      }
+      channel.subscribe()
+      return () => {
+        void client.removeChannel(channel)
+      }
+    },
+
     async setDefaultCurrency(tripId, currency, rates) {
       await rpc('set_trip_default_currency', { p_trip_id: tripId, p_currency: currency, p_rates: rates })
     },
@@ -150,7 +224,7 @@ export function createSupabaseTripsRepository(
       if (patch.color !== undefined) update.color = patch.color
       if (patch.hidden !== undefined) update.hidden_at = patch.hidden ? new Date().toISOString() : null
       const { error } = await client.from('trip_categories').update(update).eq('id', categoryId)
-      if (error) throw new RepositoryError(error.message, error.code)
+      if (error) throw toError(error)
     },
 
     async deleteCategory(categoryId, moveTo) {

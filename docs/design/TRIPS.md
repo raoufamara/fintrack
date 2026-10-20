@@ -422,7 +422,8 @@ create index idx_trip_members_user on public.trip_members(user_id);
 - `add_trip_member(trip_id, name)` adds a name-only member.
 - `upsert_trip_expense(expense jsonb, shares jsonb)` checks that `sum(shares.amount) = amount`, that the category and members belong to the trip, and computes `amount_default`. It is idempotent on `client_id`. Returns the expense id.
 - `delete_trip_expense(expense_id)`
-- `record_settlement(trip_id, from, to, amount)` validates both members, `from <> to`, `amount > 0`, and records it in the trip default currency.
+- `record_settlement(trip_id, from, to, amount, client_id default null)` validates both members, `from <> to`, `amount > 0`, and records it in the trip default currency. Idempotent on `client_id`.
+- `preview_trip_invite(code)` (authenticated only) returns the trip name, dates, default currency and the unclaimed members (`id`, `display_name`), so someone can see what they are joining and which name is theirs. Nothing else.
 - `create_trip_category(trip_id, name, icon, color)` validates the colour key and icon; a duplicate name raises `23505`.
 - `delete_trip_category(category_id, move_to uuid default null)` reassigns expenses, then deletes the category. It refuses if expenses exist and `move_to` is null, or if this is the last visible category.
 - `reorder_trip_categories(trip_id, ordered_ids uuid[])`

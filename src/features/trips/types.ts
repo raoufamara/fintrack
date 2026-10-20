@@ -112,6 +112,8 @@ export interface TripSettlement {
   amount: number
   currency: string
   fx_rate: number
+  /** Idempotency key from the retry queue. */
+  client_id?: string | null
   created_at: string
 }
 

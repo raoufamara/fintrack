@@ -49,6 +49,7 @@ reset role;
 insert into ctx select 'ma', id::text from public.trip_members where user_id is not null;
 insert into ctx select 'sara', id::text from public.trip_members where display_name = 'Sara';
 insert into ctx select 'cat', id::text from public.trip_categories where key = 'food';
+insert into ctx select 'code', invite_code from public.trips;
 
 -- 1. Direct writes that must be rejected for a member.
 select pg_temp.must_fail('insert expense', format($f$insert into trip_expenses (trip_id, category_id, title, amount, currency, paid_by, created_by) values (%L, %L, 'x', 1, 'EUR', %L, %L)$f$, (select v from ctx where k='trip')::uuid, (select v from ctx where k='cat')::uuid, (select v from ctx where k='ma')::uuid, '00000000-0000-0000-0000-00000000000a'));
@@ -104,6 +105,14 @@ begin
   exception when sqlstate '22023' then null; end;
   begin perform public.record_settlement(v_trip, v_ma, gen_random_uuid(), 1); raise exception 'foreign member accepted';
   exception when sqlstate '22023' then null; end;
+  -- Idempotent on client_id: a replay returns the same settlement and adds no row.
+  if public.record_settlement(v_trip, v_sara, v_ma, 2.5, '99999999-9999-9999-9999-999999999999')
+     <> public.record_settlement(v_trip, v_sara, v_ma, 2.5, '99999999-9999-9999-9999-999999999999') then
+    raise exception 'record_settlement replay created a second settlement';
+  end if;
+  if (select count(*) from trip_settlements where client_id = '99999999-9999-9999-9999-999999999999') <> 1 then
+    raise exception 'record_settlement replay duplicated the row';
+  end if;
 
   perform public.delete_trip_expense(v_exp);
   if exists (select 1 from trip_expenses where id = v_exp) then raise exception 'expense not deleted'; end if;
@@ -119,6 +128,44 @@ select pg_temp.must_fail('outsider create_trip_category', format($f$select publi
 set local role authenticated;
 do $$ begin
   if (select count(*) from trips) <> 0 then raise exception 'outsider can read trips'; end if;
+end $$;
+reset role;
+
+-- 5. Invites: preview shows only the trip and its unclaimed members; joining claims a member once.
+select pg_temp.as_user('00000000-0000-0000-0000-00000000000c');
+set local role authenticated;
+do $$
+declare
+  v_prev jsonb;
+  v_code text := (select v from ctx where k = 'code');
+  v_sara uuid := (select v from ctx where k = 'sara')::uuid;
+  v_joined uuid;
+begin
+  v_prev := public.preview_trip_invite(upper(v_code));
+  if (select array_agg(k order by k) from jsonb_object_keys(v_prev) k)
+     <> array['default_currency', 'end_date', 'name', 'start_date', 'trip_id', 'unclaimed'] then
+    raise exception 'preview returned unexpected keys';
+  end if;
+  if jsonb_array_length(v_prev->'unclaimed') <> 2 then raise exception 'expected 2 unclaimed members, got %', v_prev->'unclaimed'; end if;
+  if (select array_agg(k order by k) from jsonb_object_keys(v_prev->'unclaimed'->0) k) <> array['display_name', 'id'] then
+    raise exception 'unclaimed member leaks keys';
+  end if;
+  begin perform public.preview_trip_invite('nope'); raise exception 'invalid code accepted';
+  exception when sqlstate 'P0002' then null; end;
+
+  v_joined := public.join_trip(v_code, v_sara);
+  if v_joined <> v_sara then raise exception 'join_trip did not claim the chosen member'; end if;
+  if public.join_trip(v_code) <> v_sara then raise exception 'join_trip is not idempotent for a member'; end if;
+  if jsonb_array_length(public.preview_trip_invite(v_code)->'unclaimed') <> 1 then raise exception 'claimed member still unclaimed'; end if;
+end $$;
+reset role;
+
+select pg_temp.as_user('00000000-0000-0000-0000-00000000000b');
+select pg_temp.must_fail('claim an already claimed member', format($f$select public.join_trip(%L, %L)$f$, (select v from ctx where k='code'), (select v from ctx where k='sara')::uuid));
+set local role anon;
+do $$ begin
+  begin perform public.preview_trip_invite('x'); raise exception 'anon can preview invites';
+  exception when insufficient_privilege then null; end;
 end $$;
 reset role;
 

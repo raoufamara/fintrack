@@ -3,18 +3,27 @@ import { fromMinor } from '../lib/currency'
 import { amountDefault } from '../lib/money'
 import { placeToFields, type PlaceResult } from '../lib/places'
 import { createNullFxService, type FxService } from '../services/fxService'
+import {
+  backoffMs,
+  createMemoryQueueStorage,
+  type QueueItem,
+  type QueuedOp,
+  type QueueStorage,
+} from '../services/syncQueue'
 import { isDuplicateCategoryName, CATEGORY_NAME_MAX } from '../lib/categories'
 import {
   DUPLICATE_CODE,
+  isNetworkError,
   type CategoryInput,
   type CategoryPatch,
+  type InvitePreview,
   type NewTripInput,
   type RatesPayload,
   type TripSnapshot,
   type TripsRepository,
 } from '../services/TripsRepository'
 import { newId } from '../services/ids'
-import type { FxSource, SplitMode, TripCategory, TripExpense, TripExpenseShare } from '../types'
+import type { FxSource, SplitMode, TripCategory, TripExpense, TripExpenseShare, TripSettlement } from '../types'
 
 export type LoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -83,6 +92,10 @@ export interface TripsState {
   drafts: Record<string, ExpenseDraft>
   /** Last place found with the current-location button, kept for this session. */
   currentPlace: PlaceResult | null
+  /** Writes waiting for a connection, oldest first. */
+  queue: QueueItem[]
+  /** Ids of expenses and settlements that exist only on this device so far. */
+  unsynced: Record<string, true>
 
   loadTrips: () => Promise<void>
   loadTrip: (tripId: string) => Promise<void>
@@ -94,6 +107,19 @@ export interface TripsState {
   /** `moveTo` is required when the category has expenses. */
   deleteCategory: (tripId: string, categoryId: string, moveTo: string | null) => Promise<CategoryResult>
   reorderCategories: (tripId: string, orderedIds: string[]) => Promise<CategoryResult>
+  /** Re-reads the trip from the repository (e.g. after another device changed it), keeping unsent changes. */
+  refreshTrip: (tripId: string) => Promise<void>
+  /** Listens for changes made elsewhere; returns the unsubscribe function. */
+  watchTrip: (tripId: string) => () => void
+  loadQueue: () => Promise<void>
+  /** Sends queued writes in order. `force` ignores the backoff (used when the device comes back online). */
+  flushQueue: (force?: boolean) => Promise<void>
+  recordSettlement: (tripId: string, from: string, to: string, amountMinor: number) => Promise<CategoryResult>
+  addMember: (tripId: string, name: string) => Promise<CategoryResult>
+  previewInvite: (code: string) => Promise<{ ok: true; preview: InvitePreview } | { ok: false; reason: 'invalid' | 'error'; error: string }>
+  joinTrip: (code: string, tripId: string, memberId: string | null) => Promise<{ ok: true } | { ok: false; reason: 'claimed' | 'invalid' | 'error'; error: string }>
+  /** The signed-in member's personal "show in" currency; null follows the home currency. */
+  setDisplayCurrency: (tripId: string, memberId: string, currency: string | null) => Promise<CategoryResult>
   setCurrentPlace: (place: PlaceResult | null) => void
   saveDraft: (key: string, draft: ExpenseDraft) => void
   clearDraft: (key: string) => void
@@ -111,9 +137,28 @@ export type TripsStore = StoreApi<TripsState>
 const messageOf = (err: unknown) => (err instanceof Error ? err.message : 'Something went wrong')
 
 /** Creates the Trips store around an injected repository. */
-export function createTripStore(repository: TripsRepository, fx: FxService = createNullFxService()): TripsStore {
+export interface TripStoreOptions {
+  queueStorage?: QueueStorage
+  now?: () => number
+  /** Debounce for realtime-triggered refreshes. */
+  refreshDelayMs?: number
+}
+
+export function createTripStore(
+  repository: TripsRepository,
+  fx: FxService = createNullFxService(),
+  options: TripStoreOptions = {},
+): TripsStore {
+  const queueStorage = options.queueStorage ?? createMemoryQueueStorage()
+  const now = options.now ?? Date.now
+  const refreshDelayMs = options.refreshDelayMs ?? 300
   let toastSeq = 0
   let reconciling = false
+  let flushing = false
+  const refreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  /** Writes on their way to the server, so a refetch that races them does not undo them. */
+  const inflightSaves = new Map<string, { tripId: string; expense: TripExpense; shares: TripExpenseShare[] }>()
+  const inflightDeletes = new Map<string, string>()
 
   return createStore<TripsState>()((set, get) => {
     /** Applies `fn` to one trip snapshot, if loaded. */
@@ -149,6 +194,96 @@ export function createTripStore(repository: TripsRepository, fx: FxService = cre
     }
     const invalid = (error: string): CategoryResult => ({ ok: false, error })
 
+    /** Server data plus our own unsent writes, so a refetch never hides what is waiting to sync. */
+    const withQueued = (snap: TripSnapshot): TripSnapshot => {
+      let out = snap
+      for (const f of inflightSaves.values()) {
+        if (f.tripId !== snap.trip.id) continue
+        out = {
+          ...out,
+          expenses: out.expenses.filter((e) => e.id !== f.expense.id).concat(f.expense),
+          shares: out.shares.filter((x) => x.expense_id !== f.expense.id).concat(f.shares),
+        }
+      }
+      for (const [expenseId, tripId] of inflightDeletes) {
+        if (tripId !== snap.trip.id) continue
+        out = { ...out, expenses: out.expenses.filter((e) => e.id !== expenseId), shares: out.shares.filter((x) => x.expense_id !== expenseId) }
+      }
+      for (const q of get().queue.filter((x) => x.tripId === snap.trip.id)) {
+        if (q.op === 'saveExpense') {
+          out = {
+            ...out,
+            expenses: out.expenses.filter((e) => e.id !== q.payload.expense.id).concat(q.payload.expense),
+            shares: out.shares.filter((x) => x.expense_id !== q.payload.expense.id).concat(q.payload.shares),
+          }
+        } else if (q.op === 'deleteExpense') {
+          out = {
+            ...out,
+            expenses: out.expenses.filter((e) => e.id !== q.payload.expenseId),
+            shares: out.shares.filter((x) => x.expense_id !== q.payload.expenseId),
+          }
+        } else if (q.op === 'recordSettlement' && !out.settlements.some((x) => x.client_id === q.payload.settlement.client_id)) {
+          out = { ...out, settlements: [...out.settlements, q.payload.settlement] }
+        }
+      }
+      return out
+    }
+
+    const persistQueue = () => void queueStorage.save(get().queue).catch(() => undefined)
+
+    /** Adds a write to the retry queue. A newer save of the same expense replaces the older one. */
+    const enqueue = (tripId: string, clientId: string, op: QueuedOp) => {
+      const item = {
+        ...op,
+        clientId,
+        tripId,
+        attempts: 0,
+        lastError: null,
+        nextAttemptAt: 0,
+        enqueuedAt: now(),
+      } as QueueItem
+      set((state) => {
+        let queue = state.queue
+        if (op.op === 'saveExpense') {
+          const idx = queue.findIndex((q) => q.op === 'saveExpense' && q.payload.expense.id === op.payload.expense.id)
+          if (idx >= 0) {
+            queue = queue.map((q, i) => (i === idx ? { ...item, enqueuedAt: q.enqueuedAt } : q))
+            return { queue }
+          }
+        }
+        if (op.op === 'deleteExpense') {
+          // A delete cancels a save that never reached the server.
+          const hadSave = queue.some((q) => q.op === 'saveExpense' && q.payload.expense.id === op.payload.expenseId)
+          queue = queue.filter((q) => !(q.op === 'saveExpense' && q.payload.expense.id === op.payload.expenseId))
+          if (hadSave && state.unsynced[op.payload.expenseId]) {
+            const unsynced = { ...state.unsynced }
+            delete unsynced[op.payload.expenseId]
+            return { queue, unsynced }
+          }
+        }
+        return { queue: [...queue, item] }
+      })
+      persistQueue()
+    }
+    const markUnsynced = (id: string) => set((state) => ({ unsynced: { ...state.unsynced, [id]: true } }))
+
+    const runQueued = async (item: QueueItem): Promise<void> => {
+      switch (item.op) {
+        case 'saveExpense':
+          return repository.saveExpense(item.payload.expense, item.payload.shares)
+        case 'deleteExpense':
+          return repository.deleteExpense(item.payload.expenseId)
+        case 'recordSettlement':
+          return repository.recordSettlement(item.payload.settlement)
+        case 'updateCategory':
+          return repository.updateCategory(item.payload.categoryId, item.payload.patch)
+        case 'deleteCategory':
+          return repository.deleteCategory(item.payload.categoryId, item.payload.moveTo)
+        case 'reorderCategories':
+          return repository.reorderCategories(item.tripId, item.payload.orderedIds)
+      }
+    }
+
     return {
       trips: {},
       tripOrder: [],
@@ -159,13 +294,15 @@ export function createTripStore(repository: TripsRepository, fx: FxService = cre
       toast: null,
       drafts: {},
       currentPlace: null,
+      queue: [],
+      unsynced: {},
 
       async loadTrips() {
         set({ listStatus: 'loading', listError: null })
         try {
           const snapshots = await repository.listTrips()
           const trips: Record<string, TripSnapshot> = {}
-          for (const s of snapshots) trips[s.trip.id] = s
+          for (const s of snapshots) trips[s.trip.id] = withQueued(s)
           set((state) => ({
             trips: { ...state.trips, ...trips },
             tripOrder: snapshots.map((s) => s.trip.id),
@@ -186,7 +323,7 @@ export function createTripStore(repository: TripsRepository, fx: FxService = cre
           const snap = await repository.getTrip(tripId)
           if (!snap) throw new Error('This trip does not exist or you are not a member.')
           set((state) => ({
-            trips: { ...state.trips, [tripId]: snap },
+            trips: { ...state.trips, [tripId]: withQueued(snap) },
             tripOrder: state.tripOrder.includes(tripId) ? state.tripOrder : [tripId, ...state.tripOrder],
             tripStatus: { ...state.tripStatus, [tripId]: 'ready' },
             tripError: { ...state.tripError, [tripId]: '' },
@@ -271,14 +408,23 @@ export function createTripStore(repository: TripsRepository, fx: FxService = cre
         }))
 
         putExpense(input.tripId, expense, shares)
+        inflightSaves.set(id, { tripId: input.tripId, expense, shares })
         try {
           await repository.saveExpense(expense, shares)
           return true
         } catch (err) {
+          if (isNetworkError(err)) {
+            // Keep the optimistic expense, tagged "Not synced", and retry later.
+            markUnsynced(id)
+            enqueue(input.tripId, expense.client_id ?? id, { op: 'saveExpense', payload: { expense, shares } })
+            return true
+          }
           if (previous) putExpense(input.tripId, previous, previousShares)
           else dropExpense(input.tripId, id)
           get().showToast('error', `Couldn't save the expense. ${messageOf(err)}`)
           return false
+        } finally {
+          inflightSaves.delete(id)
         }
       },
 
@@ -289,13 +435,20 @@ export function createTripStore(repository: TripsRepository, fx: FxService = cre
         const previousShares = snap.shares.filter((s) => s.expense_id === expenseId)
 
         dropExpense(tripId, expenseId)
+        inflightDeletes.set(expenseId, tripId)
         try {
           await repository.deleteExpense(expenseId)
           return true
         } catch (err) {
+          if (isNetworkError(err)) {
+            enqueue(tripId, previous.client_id ?? expenseId, { op: 'deleteExpense', payload: { expenseId } })
+            return true
+          }
           putExpense(tripId, previous, previousShares)
           get().showToast('error', `Couldn't delete the expense. ${messageOf(err)}`)
           return false
+        } finally {
+          inflightDeletes.delete(expenseId)
         }
       },
 
@@ -367,6 +520,10 @@ export function createTripStore(repository: TripsRepository, fx: FxService = cre
           await repository.updateCategory(categoryId, { ...patch, ...(name !== undefined ? { name } : {}) })
           return { ok: true, id: categoryId }
         } catch (err) {
+          if (isNetworkError(err)) {
+            enqueue(tripId, categoryId, { op: 'updateCategory', payload: { categoryId, patch: { ...patch, ...(name !== undefined ? { name } : {}) } } })
+            return { ok: true, id: categoryId }
+          }
           const current = get().trips[tripId]
           if (current) putCategories(tripId, current.categories.map((c) => (c.id === categoryId ? previous : c)))
           return failure(err, 'update the category')
@@ -395,6 +552,10 @@ export function createTripStore(repository: TripsRepository, fx: FxService = cre
           await repository.deleteCategory(categoryId, moveTo)
           return { ok: true, id: categoryId }
         } catch (err) {
+          if (isNetworkError(err)) {
+            enqueue(tripId, categoryId, { op: 'deleteCategory', payload: { categoryId, moveTo } })
+            return { ok: true, id: categoryId }
+          }
           patchTrip(tripId, (s) => ({
             ...s,
             categories: s.categories.concat(previous),
@@ -415,8 +576,191 @@ export function createTripStore(repository: TripsRepository, fx: FxService = cre
           await repository.reorderCategories(tripId, orderedIds)
           return { ok: true }
         } catch (err) {
+          if (isNetworkError(err)) {
+            enqueue(tripId, tripId, { op: 'reorderCategories', payload: { orderedIds } })
+            return { ok: true }
+          }
           putCategories(tripId, previous)
           return failure(err, 'reorder the categories')
+        }
+      },
+
+      async refreshTrip(tripId) {
+        try {
+          const snap = await repository.getTrip(tripId)
+          if (snap) set((state) => ({ trips: { ...state.trips, [tripId]: withQueued(snap) } }))
+        } catch {
+          // Offline: keep what we have.
+        }
+      },
+
+      watchTrip(tripId) {
+        const unsubscribe = repository.subscribe(tripId, () => {
+          clearTimeout(refreshTimers.get(tripId))
+          refreshTimers.set(
+            tripId,
+            setTimeout(() => void get().refreshTrip(tripId), refreshDelayMs),
+          )
+        })
+        return () => {
+          unsubscribe()
+          clearTimeout(refreshTimers.get(tripId))
+          refreshTimers.delete(tripId)
+        }
+      },
+
+      async loadQueue() {
+        const stored = await queueStorage.load().catch(() => [] as QueueItem[])
+        set((state) => {
+          const known = new Set(state.queue.map((q) => `${q.op}:${q.clientId}:${q.enqueuedAt}`))
+          const merged = [...stored.filter((q) => !known.has(`${q.op}:${q.clientId}:${q.enqueuedAt}`)), ...state.queue]
+          const unsynced = { ...state.unsynced }
+          for (const q of merged) {
+            if (q.op === 'saveExpense') unsynced[q.payload.expense.id] = true
+            if (q.op === 'recordSettlement') unsynced[q.payload.settlement.id] = true
+          }
+          return { queue: merged, unsynced }
+        })
+      },
+
+      async flushQueue(force = false) {
+        if (flushing || get().queue.length === 0) return
+        flushing = true
+        const touched = new Set<string>()
+        let failed = false
+        try {
+          for (const item of [...get().queue]) {
+            if (!force && item.nextAttemptAt > now()) break
+            try {
+              await runQueued(item)
+            } catch (err) {
+              if (isNetworkError(err)) {
+                const attempts = item.attempts + 1
+                set((state) => ({
+                  queue: state.queue.map((q) =>
+                    q === item || (q.clientId === item.clientId && q.op === item.op && q.enqueuedAt === item.enqueuedAt)
+                      ? { ...q, attempts, lastError: messageOf(err), nextAttemptAt: now() + backoffMs(attempts) }
+                      : q,
+                  ),
+                }))
+                failed = true
+                break
+              }
+              // Deleting something that is already gone is fine; any other server refusal is final.
+              const alreadyGone = item.op === 'deleteExpense' && (err as { code?: string }).code === 'P0002'
+              if (!alreadyGone) {
+                get().showToast('error', `A change couldn't be synced and was dropped. ${messageOf(err)}`)
+                touched.add(item.tripId)
+              }
+            }
+            set((state) => {
+              const unsynced = { ...state.unsynced }
+              if (item.op === 'saveExpense') delete unsynced[item.payload.expense.id]
+              if (item.op === 'recordSettlement') delete unsynced[item.payload.settlement.id]
+              return {
+                queue: state.queue.filter(
+                  (q) => !(q.clientId === item.clientId && q.op === item.op && q.enqueuedAt === item.enqueuedAt),
+                ),
+                unsynced,
+              }
+            })
+            touched.add(item.tripId)
+          }
+        } finally {
+          flushing = false
+          persistQueue()
+        }
+        if (!failed) for (const id of touched) await get().refreshTrip(id)
+      },
+
+      async recordSettlement(tripId, from, to, amountMinor) {
+        const snap = get().trips[tripId]
+        if (!snap) return invalid('Trip not loaded.')
+        if (from === to || amountMinor <= 0) return invalid('Enter a valid payment.')
+        const currency = snap.trip.default_currency
+        const id = newId()
+        const settlement: TripSettlement = {
+          id,
+          trip_id: tripId,
+          from_member: from,
+          to_member: to,
+          amount: fromMinor(amountMinor, currency),
+          currency,
+          fx_rate: 1,
+          client_id: id,
+          created_at: new Date().toISOString(),
+        }
+        const remove = () =>
+          patchTrip(tripId, (s) => ({ ...s, settlements: s.settlements.filter((x) => x.id !== id) }))
+        patchTrip(tripId, (s) => ({ ...s, settlements: [...s.settlements, settlement] }))
+        try {
+          await repository.recordSettlement(settlement)
+          return { ok: true, id }
+        } catch (err) {
+          if (isNetworkError(err)) {
+            markUnsynced(id)
+            enqueue(tripId, id, { op: 'recordSettlement', payload: { settlement } })
+            return { ok: true, id }
+          }
+          remove()
+          return failure(err, 'record the payment')
+        }
+      },
+
+      async addMember(tripId, name) {
+        const trimmed = name.trim()
+        if (trimmed.length < 1) return invalid('Enter a name')
+        if (trimmed.length > 40) return invalid('Use 40 characters or fewer')
+        const snap = get().trips[tripId]
+        if (snap?.members.some((m) => m.display_name.toLowerCase() === trimmed.toLowerCase())) {
+          return invalid(`${trimmed} is already on this trip`)
+        }
+        try {
+          const id = await repository.addMember(tripId, trimmed)
+          const fresh = await repository.getTrip(tripId)
+          if (fresh) set((state) => ({ trips: { ...state.trips, [tripId]: fresh } }))
+          return { ok: true, id }
+        } catch (err) {
+          return failure(err, 'add the person')
+        }
+      },
+
+      async previewInvite(code) {
+        try {
+          return { ok: true, preview: await repository.previewInvite(code) }
+        } catch (err) {
+          const invalid = (err as { code?: string }).code === 'P0002'
+          return { ok: false, reason: invalid ? 'invalid' : 'error', error: messageOf(err) }
+        }
+      },
+
+      async joinTrip(code, tripId, memberId) {
+        try {
+          await repository.joinTrip(code, memberId)
+          await get().loadTrip(tripId)
+          return { ok: true }
+        } catch (err) {
+          const c = (err as { code?: string }).code
+          return { ok: false, reason: c === DUPLICATE_CODE ? 'claimed' : c === 'P0002' ? 'invalid' : 'error', error: messageOf(err) }
+        }
+      },
+
+      async setDisplayCurrency(tripId, memberId, currency) {
+        const snap = get().trips[tripId]
+        const previous = snap?.members.find((m) => m.id === memberId)
+        if (!snap || !previous) return invalid('Member not found.')
+        const setIt = (value: string | null) =>
+          patchTrip(tripId, (s) => ({
+            ...s,
+            members: s.members.map((m) => (m.id === memberId ? { ...m, display_currency: value } : m)),
+          }))
+        setIt(currency)
+        try {
+          await repository.updateMyDisplayCurrency(memberId, currency)
+          return { ok: true }
+        } catch (err) {
+          setIt(previous.display_currency)
+          return failure(err, 'save your display currency')
         }
       },
 
