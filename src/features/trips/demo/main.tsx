@@ -1,7 +1,8 @@
 /* eslint-disable react-refresh/only-export-components -- demo entry, not hot-reloaded */
-import { StrictMode, useState } from 'react'
+import { StrictMode, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { HashRouter, Navigate, Outlet, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom'
+import { HashRouter, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import sampleCsv from '../lib/__fixtures__/splitwise-sample.csv?raw'
 import '@/index.css'
 import { createFxService } from '../services/fxService'
 import { createMemoryFxStorage } from '../services/fxStorage'
@@ -83,11 +84,20 @@ function DemoBar() {
   const toggle = () => {
     network.online = !network.online
     setOnline(network.online)
-    if (network.online) window.dispatchEvent(new Event('online'))
+    window.dispatchEvent(new Event(network.online ? 'online' : 'offline'))
   }
+  // On the import screen, offer the sample Splitwise file so the flow can be tried.
+  const onImport = useLocation().pathname === '/trips/import'
+  const sampleUrl = useMemo(() => URL.createObjectURL(new Blob([sampleCsv], { type: 'text/csv' })), [])
   return (
     <div className="fixed inset-x-0 top-0 z-[80] flex h-7 items-center justify-between bg-primary-dark px-3 text-[11px] font-bold text-white">
-      <span>Trips demo · sample data</span>
+      {onImport ? (
+        <a href={sampleUrl} download="splitwise-sample.csv" className="underline">
+          Download sample Splitwise file
+        </a>
+      ) : (
+        <span>Trips demo · sample data</span>
+      )}
       <button type="button" onClick={toggleLink} className="rounded-full bg-white/15 px-2.5 py-0.5 text-[10px] font-extrabold">
         Link {linkOn ? 'on' : 'off'}
       </button>

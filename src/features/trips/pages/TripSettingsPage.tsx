@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ChevronRight, Coins, Eye, Link2, Tag, UserPlus } from 'lucide-react'
+import { ChevronRight, Coins, Download, Eye, Link2, Tag, UserPlus } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { BottomSheet } from '../components/BottomSheet'
 import { CurrencySheet } from '../components/CurrencySheet'
@@ -8,7 +8,10 @@ import { formatMoney, getCurrency } from '../lib/currency'
 import { formatInviteCode, inviteLink } from '../lib/invite'
 import { resolveDisplayCurrency } from '../lib/display'
 import { planCurrencyChange, type CurrencyChangePlan } from '../services/currencyChange'
+import { buildSplitwiseCsv } from '../lib/splitwiseExport'
+import { deliverCsv } from '../services/exportCsv'
 import { shareText } from '../services/share'
+import { useGuest } from '../store/GuestContext'
 import { useCurrentUserId, useFx, useHomeCurrency, useTripsStore } from '../store/TripsContext'
 import { findCurrentMember } from '../store/selectors'
 
@@ -18,6 +21,7 @@ export function TripSettingsPage() {
   const { tripId = '' } = useParams()
   const fx = useFx()
   const userId = useCurrentUserId()
+  const guest = useGuest()
   const home = useHomeCurrency()
   const snapshot = useTripsStore((s) => s.trips[tripId])
   const status = useTripsStore((s) => s.tripStatus[tripId] ?? 'idle')
@@ -106,6 +110,13 @@ export function TripSettingsPage() {
     } else setPersonError(res.error ?? 'Could not add')
   }
 
+  const exportCsv = async () => {
+    const { fileName, csv } = buildSplitwiseCsv(snapshot)
+    const outcome = await deliverCsv(fileName, csv)
+    if (outcome === 'downloaded') showToast('info', `Saved ${fileName}`)
+    if (outcome === 'shared') showToast('info', 'CSV shared')
+  }
+
   const plan = change?.plan ?? null
   return (
     <Screen>
@@ -131,6 +142,15 @@ export function TripSettingsPage() {
             <span className="flex-1 text-[15px] font-bold">Categories</span>
             <ChevronRight size={18} aria-hidden="true" className="text-text-muted" />
           </button>
+          {!guest && (
+            <button type="button" onClick={() => void exportCsv()} className="flex min-h-14 w-full items-center gap-3 px-4 text-left">
+              <Download size={20} aria-hidden="true" className="text-primary" />
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="text-[15px] font-bold">Export CSV</span>
+                <span className="text-xs text-text-muted">Expenses and payments, in the Splitwise layout.</span>
+              </span>
+            </button>
+          )}
         </div>
         <div className="flex flex-col divide-y divide-gray-100 rounded-2xl bg-surface">
           <button

@@ -54,6 +54,13 @@ export function TripsListPage() {
           </span>
           <b className="text-base">No trips yet</b>
           <p className="text-sm text-text-muted">Track who paid for what and settle up at the end.</p>
+          <button
+            type="button"
+            onClick={() => navigate('/trips/import')}
+            className="mt-2 h-11 rounded-full border border-gray-300 bg-surface px-5 text-sm font-bold text-gray-700"
+          >
+            Coming from Splitwise? Import a group
+          </button>
         </div>
       )}
 
@@ -80,11 +87,18 @@ export function TripsListPage() {
         </div>
       )}
 
-      <div className="sticky bottom-24 mt-auto pt-6">
+      <div className="sticky bottom-24 mt-auto flex gap-2.5 pt-6">
+        <button
+          type="button"
+          onClick={() => navigate('/trips/import')}
+          className="h-14 shrink-0 rounded-full border border-gray-300 bg-surface px-4 text-sm font-bold text-gray-700 shadow-lg"
+        >
+          Import from Splitwise
+        </button>
         <button
           type="button"
           onClick={() => navigate('/trips/new')}
-          className="flex h-14 w-full items-center justify-center gap-2 rounded-full bg-primary text-base font-bold text-white shadow-lg"
+          className="flex h-14 min-w-0 flex-1 items-center justify-center gap-2 rounded-full bg-primary text-base font-bold text-white shadow-lg"
         >
           <Plus size={20} aria-hidden="true" />
           New trip
