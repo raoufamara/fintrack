@@ -10,6 +10,7 @@ import { computeBalances, suggestTransfers } from '../lib/balances'
 import { formatMoney, toMinor } from '../lib/currency'
 import { formatDay } from '../lib/dates'
 import { remindMessage } from '../lib/invite'
+import { transferSentence } from '../lib/transfers'
 import { shareText } from '../services/share'
 import { useCurrentUserId, useTripsStore } from '../store/TripsContext'
 import { findCurrentMember } from '../store/selectors'
@@ -127,16 +128,17 @@ export function BalancesPage() {
               {transfers.map((t) => {
                 const mine = t.from === me?.id || t.to === me?.id
                 const amount = display.format(t.amount)
+                const sentence = transferSentence(name(t.from), name(t.to), t.from === me?.id)
                 return (
                   <li
                     key={`${t.from}-${t.to}`}
-                    aria-label={`${who(t.from)} pays ${who(t.to)}`}
+                    aria-label={sentence}
                     className={`flex flex-col gap-2.5 rounded-[18px] p-3.5 ${mine ? 'border-2 border-primary bg-primary-tint' : 'bg-surface'}`}
                   >
                     <div className="flex items-center gap-3">
                       <MemberAvatar name={name(t.from)} color={members.find((m) => m.id === t.from)?.color ?? '#ddd'} size={32} />
                       <span className="min-w-0 flex-1 text-[15px] font-bold">
-                        {who(t.from)} {t.from === me?.id ? 'pay' : 'pays'} {who(t.to)}
+                        {sentence}
                       </span>
                       <span className="flex flex-col items-end">
                         <b className="text-[15px] font-extrabold tabular-nums">{amount.main}</b>

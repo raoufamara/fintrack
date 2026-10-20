@@ -45,7 +45,10 @@ describe('balances', () => {
 
     const settle = screen.getByRole('region', { name: 'How to settle up' })
     const cards = within(settle).getAllByRole('listitem')
-    expect(cards.map((c) => c.getAttribute('aria-label'))).toEqual(['You pays Sara', 'Inès pays Sara', 'Malik pays Sara'])
+    expect(cards.map((c) => c.getAttribute('aria-label'))).toEqual(['You pay Sara', 'Inès pays Sara', 'Malik pays Sara'])
+    // The visible text and the accessible label use the same sentence.
+    expect(within(cards[0]!).getByText('You pay Sara')).toBeInTheDocument()
+    expect(within(cards[1]!).getByText('Inès pays Sara')).toBeInTheDocument()
     expect(within(cards[0]!).getByText('€6.44')).toBeInTheDocument()
     expect(within(cards[0]!).getByRole('button', { name: 'Mark as paid' })).toBeInTheDocument()
     expect(within(cards[2]!).getByText('€146.09')).toBeInTheDocument()
