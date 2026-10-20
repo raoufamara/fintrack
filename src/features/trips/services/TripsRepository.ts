@@ -1,5 +1,6 @@
 import type {
   CategoryColorKey,
+  ImportTripPayload,
   Trip,
   TripCategory,
   TripExpense,
@@ -91,6 +92,8 @@ export interface TripsRepository {
   getTrip(tripId: string): Promise<TripSnapshot | null>
   /** Returns the new trip id. */
   createTrip(input: NewTripInput): Promise<string>
+  /** Creates a whole trip (members, categories, expenses, payments) in one transaction. Online only. Returns the new trip id. */
+  importTrip(payload: ImportTripPayload): Promise<string>
   /** Insert or update an expense and replace its shares. Idempotent on `expense.id`. */
   saveExpense(expense: TripExpense, shares: TripExpenseShare[]): Promise<void>
   deleteExpense(expenseId: string): Promise<void>

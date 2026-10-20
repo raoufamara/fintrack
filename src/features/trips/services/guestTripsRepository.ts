@@ -35,6 +35,7 @@ export function createGuestTripsRepository(
     },
     subscribe: () => () => undefined,
     createTrip: refuse,
+    importTrip: refuse,
     saveExpense: refuse,
     deleteExpense: refuse,
     setDefaultCurrency: refuse,

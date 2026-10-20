@@ -23,7 +23,7 @@ import {
   type TripsRepository,
 } from '../services/TripsRepository'
 import { newId } from '../services/ids'
-import type { FxSource, SplitMode, TripCategory, TripExpense, TripExpenseShare, TripSettlement } from '../types'
+import type { FxSource, ImportTripPayload, SplitMode, TripCategory, TripExpense, TripExpenseShare, TripSettlement } from '../types'
 
 export type LoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -100,6 +100,8 @@ export interface TripsState {
   loadTrips: () => Promise<void>
   loadTrip: (tripId: string) => Promise<void>
   createTrip: (input: NewTripInput) => Promise<string | null>
+  /** Creates a trip from an import payload. Online only; no toast, the import screen shows the error. */
+  importTrip: (payload: ImportTripPayload) => Promise<{ ok: true; id: string } | { ok: false; error: string; offline: boolean }>
   saveExpense: (input: SaveExpenseInput) => Promise<boolean>
   deleteExpense: (tripId: string, expenseId: string) => Promise<boolean>
   createCategory: (tripId: string, input: CategoryInput) => Promise<CategoryResult>
@@ -356,6 +358,22 @@ export function createTripStore(
         } catch (err) {
           get().showToast('error', `Couldn't create the trip. ${messageOf(err)}`)
           return null
+        }
+      },
+
+      async importTrip(payload) {
+        try {
+          const id = await repository.importTrip(payload)
+          const snap = await repository.getTrip(id)
+          if (!snap) throw new Error('The trip was imported but could not be loaded.')
+          set((state) => ({
+            trips: { ...state.trips, [id]: snap },
+            tripOrder: [id, ...state.tripOrder.filter((t) => t !== id)],
+            tripStatus: { ...state.tripStatus, [id]: 'ready' },
+          }))
+          return { ok: true, id }
+        } catch (err) {
+          return { ok: false, error: messageOf(err), offline: isNetworkError(err) }
         }
       },
 
