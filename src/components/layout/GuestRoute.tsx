@@ -1,8 +1,10 @@
-import { Navigate } from 'react-router-dom'
+import { Navigate, useSearchParams } from 'react-router-dom'
+import { safeRedirect } from '@/lib/safeRedirect'
 import { useAuthStore } from '@/stores/authStore'
 
 export function GuestRoute({ children }: { children: React.ReactNode }) {
   const { session, loading } = useAuthStore()
+  const [searchParams] = useSearchParams()
 
   if (loading) {
     return (
@@ -13,7 +15,7 @@ export function GuestRoute({ children }: { children: React.ReactNode }) {
   }
 
   if (session) {
-    return <Navigate to="/" replace />
+    return <Navigate to={safeRedirect(searchParams.get('redirect'))} replace />
   }
 
   return <>{children}</>

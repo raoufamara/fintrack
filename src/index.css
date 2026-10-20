@@ -54,3 +54,20 @@
     -moz-osx-font-smoothing: grayscale;
   }
 }
+
+/* Trips module tokens (docs/design/TRIPS.md section 9). Static so the category
+   variables are always emitted, since components pick them by key at runtime. */
+@theme static {
+  --color-text-muted: #6F6F6F;
+  --color-owe: #B25E00;
+  --color-owe-light: #FFC46B;
+  --color-sheet-scrim: rgba(24, 16, 40, 0.6);
+
+  --color-tripcat-blue: #1460D8;   --color-tripcat-blue-bg: #E3EEFF;
+  --color-tripcat-rust: #B8470F;   --color-tripcat-rust-bg: #FFF1E6;
+  --color-tripcat-teal: #0B7A82;   --color-tripcat-teal-bg: #E2F5F6;
+  --color-tripcat-purple: #6430E8; --color-tripcat-purple-bg: #F3EDFE;
+  --color-tripcat-green: #1F7F0C;  --color-tripcat-green-bg: #EDF7EC;
+  --color-tripcat-pink: #C02675;   --color-tripcat-pink-bg: #FFEFF7;
+  --color-tripcat-grey: #555555;   --color-tripcat-grey-bg: #F1F1F1;
+}
