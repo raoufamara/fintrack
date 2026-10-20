@@ -1,14 +1,20 @@
 import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ChevronLeft, X } from 'lucide-react'
+import { useGuest } from '../store/GuestContext'
+import { GuestBar, GuestJoinFooter } from './GuestChrome'
 
 /** Full-screen page that covers the app's tab bar. Content is capped at phone width. */
 export function Screen({ children }: { children: ReactNode }) {
+  const guest = useGuest()
   return (
     <div className="fixed inset-x-0 bottom-0 top-[var(--trips-top-inset,0px)] z-40 overflow-y-auto bg-background">
       <div className="relative mx-auto flex min-h-full w-full max-w-[430px] flex-col bg-background">
+        {guest && <GuestBar />}
         {children}
+        {guest && <div aria-hidden="true" className="h-36 shrink-0" />}
       </div>
+      {guest && <GuestJoinFooter />}
     </div>
   )
 }
@@ -65,4 +71,33 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry?: ()
       )}
     </div>
   )
+}
+
+/** Error state for a trip that could not be loaded. Guests get link-specific wording. */
+export function TripLoadError({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  const guest = useGuest()
+  if (guest?.meta.status === 'dead') {
+    return (
+      <div role="alert" className="flex flex-col items-center gap-3 px-6 py-16 text-center">
+        <b className="text-base">This link no longer works</b>
+        <p className="text-sm text-text-muted">Ask the trip owner for a new one.</p>
+      </div>
+    )
+  }
+  if (guest?.meta.status === 'offline') {
+    return (
+      <div role="alert" className="flex flex-col items-center gap-3 px-6 py-16 text-center">
+        <b className="text-base">You’re offline</b>
+        <p className="text-sm text-text-muted">
+          This trip isn’t saved on this device yet. Connect to the internet and open the link again.
+        </p>
+        {onRetry && (
+          <button type="button" onClick={onRetry} className="h-11 rounded-full border border-gray-300 bg-surface px-5 text-sm font-bold">
+            Try again
+          </button>
+        )}
+      </div>
+    )
+  }
+  return <ErrorState message={message} onRetry={onRetry} />
 }

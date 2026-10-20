@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { MemberAvatar } from '../components/MemberAvatar'
 import { Screen, Spinner, TopBar } from '../components/Screen'
 import { formatRange } from '../lib/dates'
@@ -65,6 +65,8 @@ const NOT_LISTED = '__new__'
 /** Invite screen: shows the trip and who is still unclaimed, then joins as the chosen person. */
 export function JoinPage() {
   const { code = '' } = useParams()
+  const [params] = useSearchParams()
+  const preselect = params.get('member')
   const navigate = useNavigate()
   const previewInvite = useTripsStore((s) => s.previewInvite)
   const joinTrip = useTripsStore((s) => s.joinTrip)
@@ -82,13 +84,17 @@ export function JoinPage() {
       await loadTrips()
       const res = await previewInvite(code)
       if (cancelled) return
-      if (res.ok) setPhase({ kind: 'ready', preview: res.preview })
+      if (res.ok) {
+        setPhase({ kind: 'ready', preview: res.preview })
+        // Someone who picked their name on the view-only link arrives with it already chosen.
+        setChoice((current) => current ?? (res.preview.unclaimed.some((m) => m.id === preselect) ? preselect : null))
+      }
       else setPhase(res.reason === 'invalid' ? { kind: 'invalid' } : { kind: 'error', message: res.error })
     })()
     return () => {
       cancelled = true
     }
-  }, [code, previewInvite, loadTrips, reload])
+  }, [code, previewInvite, loadTrips, reload, preselect])
 
   const join = async () => {
     if (phase.kind !== 'ready' || choice === null || busy) return

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ChevronRight, Coins, Link2, Tag, UserPlus } from 'lucide-react'
+import { ChevronRight, Coins, Eye, Link2, Tag, UserPlus } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { BottomSheet } from '../components/BottomSheet'
 import { CurrencySheet } from '../components/CurrencySheet'
@@ -27,12 +27,16 @@ export function TripSettingsPage() {
   const showToast = useTripsStore((s) => s.showToast)
   const addMember = useTripsStore((s) => s.addMember)
   const setDisplayCurrency = useTripsStore((s) => s.setDisplayCurrency)
+  const setShareEnabled = useTripsStore((s) => s.setShareEnabled)
+  const rotateShareToken = useTripsStore((s) => s.rotateShareToken)
 
   const [picking, setPicking] = useState(false)
   const [pickingDisplay, setPickingDisplay] = useState(false)
   const [personName, setPersonName] = useState('')
   const [personError, setPersonError] = useState<string | null>(null)
   const [manualLink, setManualLink] = useState<string | null>(null)
+  const [manualShareLink, setManualShareLink] = useState<string | null>(null)
+  const [resetting, setResetting] = useState(false)
   const [change, setChange] = useState<{ currency: string; plan: CurrencyChangePlan | null } | null>(null)
   const [saving, setSaving] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
@@ -79,6 +83,18 @@ export function TripSettingsPage() {
     const outcome = await shareText(link, `Join ${snapshot.trip.name}`)
     if (outcome === 'copied') showToast('info', 'Invite link copied')
     if (outcome === 'manual') setManualLink(link)
+  }
+
+  const shareUrl = `${window.location.origin}/t/${snapshot.trip.share_token}`
+  const copyShareLink = async () => {
+    const outcome = await shareText(shareUrl, `${snapshot.trip.name} (view only)`)
+    if (outcome === 'copied') showToast('info', 'View-only link copied')
+    if (outcome === 'manual') setManualShareLink(shareUrl)
+  }
+  const confirmReset = async () => {
+    setResetting(false)
+    const res = await rotateShareToken(tripId)
+    if (res.ok) showToast('info', 'Link reset. The old link no longer works.')
   }
 
   const submitPerson = async (event: React.FormEvent) => {
@@ -131,6 +147,50 @@ export function TripSettingsPage() {
             <ChevronRight size={18} aria-hidden="true" className="text-text-muted" />
           </button>
         </div>
+
+        <section aria-label="Share view-only link" className="flex flex-col gap-3 rounded-2xl bg-surface p-4">
+          <div className="flex items-center gap-3">
+            <Eye size={20} aria-hidden="true" className="text-primary" />
+            <span className="flex-1 text-[15px] font-bold">Share view-only link</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={snapshot.trip.share_enabled}
+              aria-label="Share view-only link"
+              onClick={() => void setShareEnabled(tripId, !snapshot.trip.share_enabled)}
+              className={`relative h-7 w-12 rounded-full transition-colors ${snapshot.trip.share_enabled ? 'bg-primary' : 'bg-gray-300'}`}
+            >
+              <span className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition-all ${snapshot.trip.share_enabled ? 'left-[22px]' : 'left-0.5'}`} />
+            </button>
+          </div>
+          <p className="text-xs leading-relaxed text-text-muted">
+            Anyone with the view-only link sees expenses, places and balances without an account. They can’t change anything.
+          </p>
+          {snapshot.trip.share_enabled && (
+            <div className="flex flex-col gap-2">
+              <button type="button" onClick={() => void copyShareLink()} className="h-12 w-full rounded-full border border-gray-300 bg-surface text-[15px] font-bold">
+                Copy view-only link
+              </button>
+              {manualShareLink && (
+                <input
+                  readOnly
+                  aria-label="View-only link"
+                  value={manualShareLink}
+                  onFocus={(e) => e.currentTarget.select()}
+                  className="h-11 w-full rounded-[12px] border border-gray-300 bg-surface px-3 text-sm"
+                />
+              )}
+              <div className="flex gap-2">
+                <button type="button" onClick={() => navigate(`/t/${snapshot.trip.share_token}`)} className="h-11 flex-1 rounded-full border border-gray-300 bg-surface text-sm font-bold">
+                  Preview as a guest
+                </button>
+                <button type="button" onClick={() => setResetting(true)} className="h-11 flex-1 rounded-full border border-[#F3C3BF] bg-surface text-sm font-bold text-[#C4271D]">
+                  Reset link
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
 
         <section aria-label="Invite people" className="flex flex-col gap-3 rounded-2xl bg-surface p-4">
           <div className="flex items-center gap-3">
@@ -217,6 +277,20 @@ export function TripSettingsPage() {
         title="My display currency"
         selected={display}
       />
+
+      <BottomSheet open={resetting} onClose={() => setResetting(false)} title="Reset the link?">
+        <p className="text-sm leading-relaxed text-text-muted">
+          Old links stop working. Anyone who has one will need the new link to see the trip.
+        </p>
+        <div className="flex gap-2.5">
+          <button type="button" onClick={() => setResetting(false)} className="h-14 flex-1 rounded-full border border-gray-300 bg-surface text-base font-bold">
+            Cancel
+          </button>
+          <button type="button" onClick={() => void confirmReset()} className="h-14 flex-1 rounded-full bg-error text-base font-bold text-white">
+            Reset link
+          </button>
+        </div>
+      </BottomSheet>
 
       <BottomSheet
         open={change !== null}

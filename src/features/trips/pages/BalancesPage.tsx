@@ -1,8 +1,7 @@
-import { useParams } from 'react-router-dom'
 import { useEffect, useMemo, useState } from 'react'
 import { BottomSheet } from '../components/BottomSheet'
 import { MemberAvatar } from '../components/MemberAvatar'
-import { ErrorState, Screen, Spinner, TopBar } from '../components/Screen'
+import { Screen, Spinner, TopBar, TripLoadError } from '../components/Screen'
 import { ShowInControl } from '../components/ShowInControl'
 import { useDisplayCurrency } from '../hooks/useDisplayCurrency'
 import { useTripWatch } from '../hooks/useTripWatch'
@@ -12,13 +11,13 @@ import { formatDay } from '../lib/dates'
 import { remindMessage } from '../lib/invite'
 import { transferSentence } from '../lib/transfers'
 import { shareText } from '../services/share'
-import { useCurrentUserId, useTripsStore } from '../store/TripsContext'
-import { findCurrentMember } from '../store/selectors'
+import { useCurrentMember, useGuest, useTripKey } from '../store/GuestContext'
+import { useTripsStore } from '../store/TripsContext'
 import type { Transfer } from '../types'
 
 export function BalancesPage() {
-  const { tripId = '' } = useParams()
-  const userId = useCurrentUserId()
+  const tripId = useTripKey()
+  const guest = useGuest()
   const snapshot = useTripsStore((s) => s.trips[tripId])
   const status = useTripsStore((s) => s.tripStatus[tripId] ?? 'idle')
   const error = useTripsStore((s) => s.tripError[tripId])
@@ -27,6 +26,7 @@ export function BalancesPage() {
   const recordSettlement = useTripsStore((s) => s.recordSettlement)
   const showToast = useTripsStore((s) => s.showToast)
   const display = useDisplayCurrency(snapshot)
+  const me = useCurrentMember(snapshot)
   const [paying, setPaying] = useState<Transfer | null>(null)
   const [manualText, setManualText] = useState<string | null>(null)
   useTripWatch(tripId)
@@ -47,14 +47,13 @@ export function BalancesPage() {
     return (
       <Screen>
         <TopBar title="Balances" />
-        {status === 'error' ? <ErrorState message={error || 'Could not load this trip.'} onRetry={() => void loadTrip(tripId)} /> : <Spinner />}
+        {status === 'error' ? <TripLoadError message={error || 'Could not load this trip.'} onRetry={() => void loadTrip(tripId)} /> : <Spinner />}
       </Screen>
     )
   }
 
   const { trip, members } = snapshot
   const currency = trip.default_currency
-  const me = findCurrentMember(snapshot, userId)
   const name = (id: string) => members.find((m) => m.id === id)?.display_name ?? '?'
   const who = (id: string) => (id === me?.id ? 'You' : name(id))
   const rows = members
@@ -149,7 +148,7 @@ export function BalancesPage() {
                       <p className="text-xs text-text-muted">{amount.main} on your card</p>
                     )}
                     <div className="flex gap-2">
-                      {mine && (
+                      {mine && !guest && (
                         <button
                           type="button"
                           onClick={() => setPaying(t)}
@@ -158,7 +157,7 @@ export function BalancesPage() {
                           Mark as paid
                         </button>
                       )}
-                      {(!mine || t.to === me?.id) && (
+                      {!guest && (!mine || t.to === me?.id) && (
                         <button
                           type="button"
                           onClick={() => void remind(t)}

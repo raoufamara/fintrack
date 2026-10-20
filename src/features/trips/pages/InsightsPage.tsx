@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
-import { ErrorState, Screen, Spinner, TopBar } from '../components/Screen'
+import { useNavigate } from 'react-router-dom'
+import { Screen, Spinner, TopBar, TripLoadError } from '../components/Screen'
 import { ShowInControl } from '../components/ShowInControl'
 import { useDisplayCurrency } from '../hooks/useDisplayCurrency'
 import { useTripWatch } from '../hooks/useTripWatch'
@@ -8,13 +8,14 @@ import { formatMoney, toMinor } from '../lib/currency'
 import { todayISO } from '../lib/dates'
 import { EMPTY_FILTER, NO_LOCATION, serializeFilter } from '../lib/filter'
 import { computeInsights, type InsightsMode } from '../lib/insights'
-import { useCurrentUserId, useTripsStore } from '../store/TripsContext'
-import { findCurrentMember } from '../store/selectors'
+import { useBasePath, useCurrentMember, useGuest, useTripKey } from '../store/GuestContext'
+import { useTripsStore } from '../store/TripsContext'
 
 export function InsightsPage() {
-  const { tripId = '' } = useParams()
+  const tripId = useTripKey()
+  const basePath = useBasePath()
+  const guest = useGuest()
   const navigate = useNavigate()
-  const userId = useCurrentUserId()
   const snapshot = useTripsStore((s) => s.trips[tripId])
   const status = useTripsStore((s) => s.tripStatus[tripId] ?? 'idle')
   const error = useTripsStore((s) => s.tripError[tripId])
@@ -27,7 +28,7 @@ export function InsightsPage() {
     if (!snapshot) void loadTrip(tripId)
   }, [loadTrip, tripId, snapshot])
 
-  const me = snapshot ? findCurrentMember(snapshot, userId) : undefined
+  const me = useCurrentMember(snapshot)
   const insights = useMemo(
     () =>
       snapshot
@@ -51,7 +52,7 @@ export function InsightsPage() {
     return (
       <Screen>
         <TopBar title="Insights" />
-        {status === 'error' ? <ErrorState message={error || 'Could not load this trip.'} onRetry={() => void loadTrip(tripId)} /> : <Spinner />}
+        {status === 'error' ? <TripLoadError message={error || 'Could not load this trip.'} onRetry={() => void loadTrip(tripId)} /> : <Spinner />}
       </Screen>
     )
   }
@@ -59,7 +60,7 @@ export function InsightsPage() {
   const currency = snapshot.trip.default_currency
   const catOf = (id: string) => snapshot.categories.find((c) => c.id === id)
   const go = (filter: Partial<typeof EMPTY_FILTER>) =>
-    navigate(`/trips/${tripId}?${serializeFilter({ ...EMPTY_FILTER, ...filter }).toString()}`)
+    navigate(`${basePath}?${serializeFilter({ ...EMPTY_FILTER, ...filter }).toString()}`)
 
   const tile = (label: string, minor: number | null) => {
     if (minor === null) return null
@@ -73,12 +74,15 @@ export function InsightsPage() {
     )
   }
 
+  // A guest has no share until they say who they are.
   const seg = (m: InsightsMode, label: string) => (
     <button
       type="button"
       aria-pressed={mode === m}
+      disabled={m === 'mine' && !!guest && !me}
+      title={m === 'mine' && guest && !me ? 'Pick your name on the trip screen first' : undefined}
       onClick={() => setMode(m)}
-      className={`h-9 flex-1 rounded-[10px] text-[13px] ${mode === m ? 'bg-surface font-extrabold shadow-sm' : 'font-bold text-gray-600'}`}
+      className={`h-9 flex-1 rounded-[10px] text-[13px] disabled:opacity-40 ${mode === m ? 'bg-surface font-extrabold shadow-sm' : 'font-bold text-gray-600'}`}
     >
       {label}
     </button>

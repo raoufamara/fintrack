@@ -2,18 +2,22 @@ import { useDisplayCurrency } from '../hooks/useDisplayCurrency'
 import { useTripWatch } from '../hooks/useTripWatch'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, PieChart, Plus, Scale, Search, Settings, SlidersHorizontal, X } from 'lucide-react'
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { CategoryChipRow } from '../components/CategoryChipRow'
 import { FilterSheet } from '../components/FilterSheet'
 import { ExpenseRow } from '../components/ExpenseRow'
 import { MemberAvatar } from '../components/MemberAvatar'
-import { ErrorState, Screen, Spinner } from '../components/Screen'
+import { ExpenseDetailSheet } from '../components/ExpenseDetailSheet'
+import { Screen, Spinner, TripLoadError } from '../components/Screen'
+import { WhoAreYou } from '../components/WhoAreYou'
 import { formatMoney, toMinor } from '../lib/currency'
 import { formatDay, formatRange, todayISO } from '../lib/dates'
 import { countActiveFilters, EMPTY_FILTER, NO_LOCATION, filterExpenses, parseFilter, serializeFilter } from '../lib/filter'
 import type { TripExpense, TripExpenseFilter } from '../types'
-import { useCurrentUserId, useTripsStore } from '../store/TripsContext'
-import { findCurrentMember, sortExpenses, summarizeTrip, usedCategoriesBySpend } from '../store/selectors'
+import { useGuest, useCurrentMember, useTripKey } from '../store/GuestContext'
+import { useTripsStore } from '../store/TripsContext'
+import { computeBalances, suggestTransfers } from '../lib/balances'
+import { sortExpenses, summarizeTrip, usedCategoriesBySpend } from '../store/selectors'
 
 function groupByDay(expenses: readonly TripExpense[]): Array<[string, TripExpense[]]> {
   const groups = new Map<string, TripExpense[]>()
@@ -26,9 +30,10 @@ function groupByDay(expenses: readonly TripExpense[]): Array<[string, TripExpens
 }
 
 export function TripPage() {
-  const { tripId = '' } = useParams()
+  const tripId = useTripKey()
+  const guest = useGuest()
+  const isGuest = !!guest
   const navigate = useNavigate()
-  const userId = useCurrentUserId()
   const snapshot = useTripsStore((s) => s.trips[tripId])
   const status = useTripsStore((s) => s.tripStatus[tripId] ?? 'idle')
   const error = useTripsStore((s) => s.tripError[tripId])
@@ -40,10 +45,12 @@ export function TripPage() {
   useTripWatch(tripId)
   useEffect(() => {
     // Load the trip, then refresh stale rates and convert pending expenses in the background.
-    void loadTrip(tripId).then(() => syncRates(tripId))
-  }, [loadTrip, syncRates, tripId])
+    // Guests only read: no rate reconciliation, which would write.
+    void loadTrip(tripId).then(() => (isGuest ? undefined : syncRates(tripId)))
+  }, [loadTrip, syncRates, tripId, isGuest])
 
-  const me = snapshot ? findCurrentMember(snapshot, userId) : undefined
+  const me = useCurrentMember(snapshot)
+  const [detail, setDetail] = useState<TripExpense | null>(null)
   const summary = useMemo(
     () => (snapshot ? summarizeTrip(snapshot, me?.id) : null),
     [snapshot, me?.id],
@@ -108,6 +115,12 @@ export function TripPage() {
     [snapshot, filter, me?.id],
   )
 
+  const guestTransfers = useMemo(() => {
+    if (!guest || !me || !snapshot) return []
+    const { balances } = computeBalances(snapshot.expenses, snapshot.shares, snapshot.settlements, snapshot.trip.default_currency)
+    return suggestTransfers(balances, me.id).filter((t) => t.from === me.id || t.to === me.id)
+  }, [guest, me, snapshot])
+
   if (!snapshot || !summary || !result) {
     return (
       <Screen>
@@ -120,7 +133,7 @@ export function TripPage() {
           <ChevronLeft size={22} />
         </button>
         {status === 'error' ? (
-          <ErrorState message={error || 'Could not load this trip.'} onRetry={() => void loadTrip(tripId)} />
+          <TripLoadError message={error || 'Could not load this trip.'} onRetry={() => void loadTrip(tripId)} />
         ) : (
           <Spinner label="Loading trip" />
         )}
@@ -173,9 +186,13 @@ export function TripPage() {
     <Screen>
       <section className="flex flex-col gap-3.5 bg-primary-dark px-5 pb-5 pt-3 text-white">
         <div className="flex items-center justify-between">
-          <button type="button" aria-label="Back to trips" onClick={() => navigate('/trips')} className={`${iconBtn} -ml-3`}>
-            <ChevronLeft size={22} />
-          </button>
+          {guest ? (
+            <span className="h-11" />
+          ) : (
+            <button type="button" aria-label="Back to trips" onClick={() => navigate('/trips')} className={`${iconBtn} -ml-3`}>
+              <ChevronLeft size={22} />
+            </button>
+          )}
           <div className="flex">
             <button type="button" aria-label="Insights" onClick={() => navigate('insights')} className={iconBtn}>
               <PieChart size={22} />
@@ -183,9 +200,11 @@ export function TripPage() {
             <button type="button" aria-label="Balances" onClick={() => navigate('balances')} className={iconBtn}>
               <Scale size={22} />
             </button>
-            <button type="button" aria-label="Trip settings" onClick={() => navigate('settings')} className={`${iconBtn} -mr-3`}>
-              <Settings size={22} />
-            </button>
+            {!guest && (
+              <button type="button" aria-label="Trip settings" onClick={() => navigate('settings')} className={`${iconBtn} -mr-3`}>
+                <Settings size={22} />
+              </button>
+            )}
           </div>
         </div>
         <div className="flex items-end justify-between gap-3">
@@ -195,6 +214,9 @@ export function TripPage() {
               {currency}
             </span>
             <h1 className="text-[26px] font-extrabold leading-tight tracking-tight">{trip.name}</h1>
+            {trip.archived_at && (
+              <span className="self-start rounded-full bg-white/15 px-2.5 py-0.5 text-[11px] font-extrabold">Trip archived</span>
+            )}
           </div>
           <div className="flex shrink-0">
             {members.slice(0, 5).map((m, i) => (
@@ -204,7 +226,7 @@ export function TripPage() {
             ))}
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-2.5">
+        <div className={`grid gap-2.5 ${guest ? 'grid-cols-1' : 'grid-cols-2'}`}>
           <div className="flex flex-col gap-1 rounded-[14px] bg-white/10 p-3">
             <span className="text-xs font-semibold text-[#CFC3F5]">Group spent</span>
             <span className="text-xl font-extrabold tabular-nums">{spentShown.main}</span>
@@ -227,6 +249,7 @@ export function TripPage() {
               </span>
             )}
           </div>
+          {!guest && (
           <button
             type="button"
             onClick={() => navigate('balances')}
@@ -239,7 +262,17 @@ export function TripPage() {
             {balanceShown.sub && <span className="text-[11px] tabular-nums text-[#CFC3F5]">{balanceShown.sub}</span>}
             <span className="text-[11px] text-[#CFC3F5]">{balanceSub} · Settle up ›</span>
           </button>
+          )}
         </div>
+        {guest && snapshot && (
+          <WhoAreYou
+            members={members}
+            pickedId={me?.id ?? null}
+            onPick={(id) => guest.setPick(trip.id, id)}
+            transfers={guestTransfers}
+            currency={currency}
+          />
+        )}
         {queued > 0 && (
           <p role="status" className="rounded-[10px] bg-white/10 px-3 py-2 text-xs font-bold text-owe-light">
             {queued} {queued === 1 ? 'change' : 'changes'} waiting to sync
@@ -377,7 +410,7 @@ export function TripPage() {
                         category={categories.find((c) => c.id === e.category_id)}
                         payerName={memberName(e.paid_by)}
                         defaultCurrency={currency}
-                        onOpen={(id) => navigate(`expenses/${id}`)}
+                        onOpen={(id) => (guest ? setDetail(expenses.find((x) => x.id === id) ?? null) : navigate(`expenses/${id}`))}
                       />
                     ))}
                   </div>
@@ -401,8 +434,10 @@ export function TripPage() {
         defaultCurrency={currency}
         tripStart={trip.start_date}
         tripEnd={trip.end_date}
+        showMine={!guest || !!me}
       />
 
+      {!guest && (
       <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40">
         <div className="mx-auto flex max-w-[430px] justify-end px-5 pb-6">
           <button
@@ -415,6 +450,8 @@ export function TripPage() {
           </button>
         </div>
       </div>
+      )}
+      {guest && <ExpenseDetailSheet expense={detail} snapshot={snapshot} onClose={() => setDetail(null)} />}
     </Screen>
   )
 }

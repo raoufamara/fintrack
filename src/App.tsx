@@ -14,6 +14,8 @@ import { AddTransaction } from '@/pages/AddTransaction'
 import { TransactionHistory } from '@/pages/TransactionHistory'
 import { StrategyWizard } from '@/pages/StrategyWizard'
 import { SupabaseTripsProvider } from '@/features/trips/SupabaseTripsProvider'
+import { PublicTripsProvider } from '@/features/trips/PublicTripsProvider'
+import { tripsPublicRoutes } from '@/features/trips/publicRoutes'
 import { tripsRoutes } from '@/features/trips/routes'
 
 export default function App() {
@@ -24,6 +26,9 @@ export default function App() {
         <Route path="login" element={<GuestRoute><Login /></GuestRoute>} />
         <Route path="signup" element={<GuestRoute><Signup /></GuestRoute>} />
         <Route path="forgot-password" element={<GuestRoute><ForgotPassword /></GuestRoute>} />
+
+        {/* Public view-only trip links: outside every auth guard, anon key only */}
+        <Route element={<PublicTripsProvider />}>{tripsPublicRoutes}</Route>
 
         {/* Protected routes — require login */}
         <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>

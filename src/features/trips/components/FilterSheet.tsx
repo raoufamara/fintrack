@@ -20,6 +20,8 @@ interface FilterSheetProps {
   /** Trip dates, used to clamp the date fields. */
   tripStart: string | null
   tripEnd: string | null
+  /** Hide "Only expenses I'm part of" (guests who have not picked a name). */
+  showMine?: boolean
 }
 
 const chip =
@@ -46,6 +48,7 @@ export function FilterSheet({
   defaultCurrency,
   tripStart,
   tripEnd,
+  showMine = true,
 }: FilterSheetProps) {
   // Hidden categories only show when they have expenses (or are selected).
   const offered = categories.filter(
@@ -162,6 +165,7 @@ export function FilterSheet({
         </div>
       </div>
 
+      {showMine && (
       <label className="flex min-h-11 cursor-pointer items-center justify-between gap-3">
         <span className="text-[15px] font-bold">Only expenses I’m part of</span>
         <input
@@ -171,6 +175,7 @@ export function FilterSheet({
           className="h-[22px] w-[22px] accent-primary"
         />
       </label>
+      )}
 
       <div className="flex gap-2.5">
         {(['from', 'to'] as const).map((key) => (

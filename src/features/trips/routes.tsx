@@ -5,6 +5,7 @@ import { ExpenseFormPage } from './pages/ExpenseFormPage'
 import { BalancesPage } from './pages/BalancesPage'
 import { InsightsPage } from './pages/InsightsPage'
 import { JoinCodePage, JoinPage } from './pages/JoinPage'
+import { JoinSharedPage } from './pages/JoinSharedPage'
 import { LocationPickerPage } from './pages/LocationPickerPage'
 import { NewTripPage } from './pages/NewTripPage'
 import { TripPage } from './pages/TripPage'
@@ -21,6 +22,7 @@ export const tripsRoutes = (
     <Route path="new" element={<NewTripPage />} />
     <Route path="join" element={<JoinCodePage />} />
     <Route path="join/:code" element={<JoinPage />} />
+    <Route path="join-shared/:shareToken" element={<JoinSharedPage />} />
     <Route path=":tripId" element={<TripPage />} />
     <Route path=":tripId/expenses/new" element={<ExpenseFormPage />} />
     <Route path=":tripId/expenses/:id" element={<ExpenseFormPage />} />
