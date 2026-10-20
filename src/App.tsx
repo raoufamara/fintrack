@@ -13,6 +13,8 @@ import { ForgotPassword } from '@/pages/ForgotPassword'
 import { AddTransaction } from '@/pages/AddTransaction'
 import { TransactionHistory } from '@/pages/TransactionHistory'
 import { StrategyWizard } from '@/pages/StrategyWizard'
+import { SupabaseTripsProvider } from '@/features/trips/SupabaseTripsProvider'
+import { tripsRoutes } from '@/features/trips/routes'
 
 export default function App() {
   return (
@@ -30,6 +32,7 @@ export default function App() {
           <Route path="insights/:categoryId" element={<CategoryDetail />} />
           <Route path="profile" element={<Profile />} />
           <Route path="transactions" element={<TransactionHistory />} />
+          <Route element={<SupabaseTripsProvider />}>{tripsRoutes}</Route>
         </Route>
         <Route path="transactions/add" element={<ProtectedRoute><AddTransaction /></ProtectedRoute>} />
         <Route path="budget/create" element={<ProtectedRoute><CreateBudget /></ProtectedRoute>} />

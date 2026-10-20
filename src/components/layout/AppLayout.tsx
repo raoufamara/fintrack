@@ -1,8 +1,9 @@
 import { Outlet, NavLink } from 'react-router-dom'
-import { Home, PieChart, User } from 'lucide-react'
+import { Home, PieChart, Plane, User } from 'lucide-react'
 
 const tabs = [
   { to: '/', icon: Home, label: 'Home' },
+  { to: '/trips', icon: Plane, label: 'Trips' },
   { to: '/insights', icon: PieChart, label: 'Insights' },
   { to: '/profile', icon: User, label: 'Profile' },
 ] as const
