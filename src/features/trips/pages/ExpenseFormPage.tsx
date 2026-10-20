@@ -1,20 +1,22 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { ChevronRight, Plus, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { BottomSheet } from '../components/BottomSheet'
 import { CategoryEditSheet } from '../components/CategoryEditSheet'
 import { CategoryIcon } from '../components/CategoryIcon'
+import { CurrencySheet } from '../components/CurrencySheet'
 import { PayerSheet } from '../components/PayerSheet'
 import { ErrorState, Screen, Spinner, TopBar } from '../components/Screen'
 import { SplitSheet } from '../components/SplitSheet'
 import { minorToInput, sanitizeAmountInput } from '../lib/amountInput'
-import { toMinor } from '../lib/currency'
+import { formatMoney, minorUnits, toMinor } from '../lib/currency'
 import { todayISO } from '../lib/dates'
 import { validateExpenseForm } from '../lib/validation'
-import { splitAmount } from '../lib/money'
+import { splitAmount, toDefault } from '../lib/money'
+import { formatAge, formatRate, type FxRate } from '../services/fxService'
 import type { TripSnapshot } from '../services/TripsRepository'
-import { useCurrentUserId, useTripsStore } from '../store/TripsContext'
-import { defaultCategoryId, findCurrentMember, visibleCategories } from '../store/selectors'
+import { useCurrentUserId, useFx, useTripsStore, useTripsStoreApi } from '../store/TripsContext'
+import { defaultCategoryId, findCurrentMember, lastCurrencyUsed, usedCurrencies, visibleCategories } from '../store/selectors'
 
 export function ExpenseFormPage() {
   const { tripId = '', id } = useParams()
@@ -59,7 +61,7 @@ function ExpenseForm({ snapshot, expenseId }: { snapshot: TripSnapshot; expenseI
   const deleteExpense = useTripsStore((s) => s.deleteExpense)
 
   const { trip, members } = snapshot
-  const currency = trip.default_currency
+  const defaultCurrency = trip.default_currency
   const me = findCurrentMember(snapshot, userId)
   const existing = expenseId ? snapshot.expenses.find((e) => e.id === expenseId) : undefined
   const existingShares = useMemo(
@@ -67,22 +69,79 @@ function ExpenseForm({ snapshot, expenseId }: { snapshot: TripSnapshot; expenseI
     [existing, snapshot.shares],
   )
   const isCustomSplit = !!existing && existing.split_mode !== 'equal'
+  const fx = useFx()
+  const storeApi = useTripsStoreApi()
+  const draftKey = `${trip.id}:${expenseId ?? 'new'}`
+  // A draft is stashed when the user leaves for Categories and comes back.
+  const [draft] = useState(() => storeApi.getState().drafts[draftKey])
+  useEffect(() => {
+    storeApi.getState().clearDraft(draftKey)
+  }, [storeApi, draftKey])
 
-  const [amount, setAmount] = useState(existing ? minorToInput(toMinor(existing.amount, currency), currency) : '')
-  const [title, setTitle] = useState(existing?.title ?? '')
+  const [currency, setCurrency] = useState(
+    draft?.currency ?? existing?.currency ?? lastCurrencyUsed(snapshot, me?.id),
+  )
+  const [amount, setAmount] = useState(
+    draft?.amount ?? (existing ? minorToInput(toMinor(existing.amount, existing.currency), existing.currency) : ''),
+  )
+  const [title, setTitle] = useState(draft?.title ?? existing?.title ?? '')
   const [categoryId, setCategoryId] = useState<string | undefined>(
-    existing?.category_id ?? defaultCategoryId(snapshot, me?.id),
+    draft ? draft.categoryId : (existing?.category_id ?? defaultCategoryId(snapshot, me?.id)),
   )
-  const [paidBy, setPaidBy] = useState(existing?.paid_by ?? me?.id ?? members[0]?.id ?? '')
+  const [paidBy, setPaidBy] = useState(draft?.paidBy ?? existing?.paid_by ?? me?.id ?? members[0]?.id ?? '')
   const [splitIds, setSplitIds] = useState<string[]>(
-    existing ? existingShares.map((s) => s.member_id) : members.map((m) => m.id),
+    draft?.splitIds ?? (existing ? existingShares.map((s) => s.member_id) : members.map((m) => m.id)),
   )
-  const [date, setDate] = useState(existing?.date ?? todayISO())
+  const [date, setDate] = useState(draft?.date ?? existing?.date ?? todayISO())
+  const [manualRate, setManualRate] = useState<string | null>(
+    draft ? draft.manualRate : existing?.fx_source === 'manual' && existing.fx_rate !== null ? String(existing.fx_rate) : null,
+  )
   const [submitted, setSubmitted] = useState(false)
-  const [sheet, setSheet] = useState<'payer' | 'split' | 'delete' | 'category' | null>(null)
+  const [sheet, setSheet] = useState<'payer' | 'split' | 'delete' | 'category' | 'currency' | null>(null)
+
+  // Rate lookup for foreign currencies. An unchanged stored rate is kept as is.
+  const storedRateApplies =
+    !!existing && existing.fx_rate !== null && existing.currency === currency && existing.date === date
+  const [lookup, setLookup] = useState<{ key: string; rate: FxRate | null } | null>(null)
+  const lookupKey = `${currency}|${date}`
+  useEffect(() => {
+    if (currency === defaultCurrency || storedRateApplies) return
+    let cancelled = false
+    void fx.getRate(currency, defaultCurrency, date).then((rate) => {
+      if (!cancelled) setLookup({ key: lookupKey, rate })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [fx, currency, defaultCurrency, date, lookupKey, storedRateApplies])
+
+  const manualValue = manualRate !== null && Number(manualRate) > 0 ? Number(manualRate) : null
+  const cached: FxRate | null =
+    currency === defaultCurrency
+      ? { rate: 1, source: 'same', ageHours: 0, tableDate: null }
+      : storedRateApplies && existing && existing.fx_source !== 'manual'
+        ? { rate: existing.fx_rate!, source: existing.fx_source === 'api' ? 'api' : 'cache', ageHours: 0, tableDate: existing.fx_date }
+        : lookup?.key === lookupKey
+          ? lookup.rate
+          : null
+  const rateLoading = currency !== defaultCurrency && !storedRateApplies && lookup?.key !== lookupKey
+  const effective: { rate: number; source: 'same' | 'cache' | 'api' | 'manual'; ageHours: number; tableDate: string | null } | null =
+    currency === defaultCurrency
+      ? { rate: 1, source: 'same', ageHours: 0, tableDate: null }
+      : manualValue !== null
+        ? { rate: manualValue, source: 'manual', ageHours: 0, tableDate: null }
+        : cached
 
   const { errors, amountMinor } = validateExpenseForm({ amount, title, date, categoryId, currency })
   const show = submitted ? errors : {}
+  const convertedMinor = effective && amountMinor > 0 ? toDefault(amountMinor, currency, effective.rate, defaultCurrency) : 0
+
+  const changeCurrency = (code: string) => {
+    if (code === currency) return
+    setCurrency(code)
+    setManualRate(null)
+    setAmount((a) => sanitizeAmountInput(a, code))
+  }
 
   const categories = useMemo(() => {
     const visible = visibleCategories(snapshot.categories)
@@ -109,7 +168,7 @@ function ExpenseForm({ snapshot, expenseId }: { snapshot: TripSnapshot; expenseI
           amountMinor,
           'shares',
           existingShares.map((s) => s.member_id),
-          Object.fromEntries(existingShares.map((s) => [s.member_id, toMinor(s.amount, currency)])),
+          Object.fromEntries(existingShares.map((s) => [s.member_id, toMinor(s.amount, existing?.currency ?? currency)])),
         )
       : splitAmount(amountMinor, 'equal', splitIds)
 
@@ -125,6 +184,10 @@ function ExpenseForm({ snapshot, expenseId }: { snapshot: TripSnapshot; expenseI
       note: existing?.note ?? null,
       splitMode: existing?.split_mode ?? 'equal',
       shares,
+      currency,
+      fxRate: effective?.rate ?? null,
+      fxSource: effective && effective.source !== 'same' ? effective.source : null,
+      fxDate: effective?.tableDate ?? null,
     })
     navigate(`/trips/${trip.id}`, { replace: true })
   }
@@ -161,22 +224,48 @@ function ExpenseForm({ snapshot, expenseId }: { snapshot: TripSnapshot; expenseI
       <form onSubmit={submit} noValidate className="flex flex-1 flex-col">
         <div className="flex flex-col items-center gap-1.5 border-b border-gray-100 bg-surface px-5 pb-4 pt-2">
           <div className="flex items-baseline justify-center gap-2">
-            <span
-              title="The currency is fixed to the trip currency for now"
-              className="flex h-9 items-center rounded-[10px] border border-gray-300 px-2.5 text-sm font-extrabold text-gray-700"
+            <button
+              type="button"
+              aria-label={`Currency: ${currency}. Change currency`}
+              onClick={() => setSheet('currency')}
+              className="flex h-9 items-center gap-1 rounded-[10px] border border-gray-300 px-2.5 text-sm font-extrabold text-gray-700"
             >
               {currency}
-            </span>
+              <ChevronDown size={14} aria-hidden="true" />
+            </button>
             <input
               inputMode="decimal"
               aria-label="Amount"
               aria-invalid={!!show.amount}
-              placeholder="0.00"
+              placeholder={minorUnits(currency) === 0 ? '0' : '0.00'}
               value={amount}
               onChange={(e) => setAmount(sanitizeAmountInput(e.target.value, currency))}
               className="w-[7ch] bg-transparent text-[44px] font-extrabold tracking-tight outline-none"
             />
           </div>
+          {currency !== defaultCurrency && (
+            <div className="flex flex-col items-center gap-1 text-center text-xs text-text-muted" aria-live="polite">
+              {rateLoading ? (
+                <span>Looking up the rate…</span>
+              ) : effective ? (
+                <span className="tabular-nums">
+                  {amountMinor > 0 ? `= ${formatMoney(convertedMinor, defaultCurrency)} in trip currency · ` : ''}
+                  rate {formatRate(effective.rate)} ·{' '}
+                  {effective.source === 'manual' ? 'your rate' : `updated ${formatAge(effective.ageHours)}`}
+                  <button type="button" onClick={() => setSheet('currency')} className="ml-2 font-bold text-primary">
+                    Edit rate
+                  </button>
+                </span>
+              ) : (
+                <span className="rounded-[8px] bg-warning-light px-2.5 py-1.5 font-semibold text-[#6B4400]">
+                  Rate pending: converts when you’re back online.{' '}
+                  <button type="button" onClick={() => setSheet('currency')} className="font-extrabold underline">
+                    Type a rate
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
           {show.amount && (
             <span role="alert" className="text-xs font-bold text-error">
               {show.amount}
@@ -210,7 +299,19 @@ function ExpenseForm({ snapshot, expenseId }: { snapshot: TripSnapshot; expenseI
               <span className="text-[13px] font-extrabold text-gray-700">Category</span>
               <button
                 type="button"
-                onClick={() => navigate(`/trips/${trip.id}/categories`)}
+                onClick={() => {
+                  storeApi.getState().saveDraft(draftKey, {
+                    amount,
+                    title,
+                    categoryId,
+                    paidBy,
+                    splitIds,
+                    date,
+                    currency,
+                    manualRate,
+                  })
+                  navigate(`/trips/${trip.id}/categories`)
+                }}
                 className="h-9 px-1 text-[13px] font-bold text-primary"
               >
                 Edit
@@ -300,6 +401,25 @@ function ExpenseForm({ snapshot, expenseId }: { snapshot: TripSnapshot; expenseI
         onClose={() => setSheet(null)}
         tripId={trip.id}
         onCreated={setCategoryId}
+      />
+      <CurrencySheet
+        open={sheet === 'currency'}
+        onClose={() => setSheet(null)}
+        onSelect={changeCurrency}
+        selected={currency}
+        tripCurrency={defaultCurrency}
+        usedCurrencies={usedCurrencies(snapshot)}
+        rateEditor={
+          currency === defaultCurrency
+            ? undefined
+            : {
+                currency,
+                rate: effective?.rate ?? null,
+                cachedRate: cached?.rate ?? null,
+                manual: manualValue !== null,
+                onChange: (r) => setManualRate(r === null ? null : String(r)),
+              }
+        }
       />
       <PayerSheet
         open={sheet === 'payer'}

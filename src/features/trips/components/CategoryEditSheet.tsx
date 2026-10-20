@@ -158,7 +158,7 @@ function EditBody({
 
       <div className="flex flex-col gap-2" role="group" aria-label="Colour">
         <span className="text-[13px] font-extrabold text-gray-700">Colour</span>
-        <div className="flex flex-wrap gap-2">
+        <div className="grid grid-cols-7 gap-1.5">
           {CATEGORY_COLOR_KEYS.map((key) => (
             <button
               key={key}
@@ -166,7 +166,7 @@ function EditBody({
               aria-label={key}
               aria-pressed={color === key}
               onClick={() => setColor(key)}
-              className="h-11 w-11 rounded-full border-2"
+              className="aspect-square min-h-11 w-full rounded-full border-2"
               style={{
                 background: `var(--color-tripcat-${key})`,
                 borderColor: color === key ? 'var(--color-text-primary)' : 'transparent',
@@ -176,14 +176,6 @@ function EditBody({
           ))}
         </div>
       </div>
-
-      <button
-        type="submit"
-        disabled={saving}
-        className="h-14 w-full rounded-full bg-primary text-base font-bold text-white disabled:bg-[#C9C2DA]"
-      >
-        {existing ? 'Save' : 'Add category'}
-      </button>
 
       {existing && (
         <>
@@ -212,6 +204,14 @@ function EditBody({
           )}
         </>
       )}
+      <button
+        type="submit"
+        disabled={saving}
+        className="h-14 w-full rounded-full bg-primary text-base font-bold text-white disabled:bg-[#C9C2DA]"
+      >
+        {existing ? 'Save' : 'Add category'}
+      </button>
+
     </form>
   )
 }

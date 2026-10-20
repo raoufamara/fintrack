@@ -4,6 +4,7 @@ import { MemoryRouter, Routes, useLocation } from 'react-router-dom'
 import { todayISO } from '../lib/dates'
 import { buildLisbonPortoSeed } from '../services/memorySeed'
 import { createMemoryTripsRepository } from '../services/memoryTripsRepository'
+import type { FxService } from '../services/fxService'
 import type { TripSnapshot, TripsRepository } from '../services/TripsRepository'
 import { tripsRoutes } from '../routes'
 import { TripsProvider } from '../store/TripsProvider'
@@ -23,7 +24,7 @@ function LocationProbe() {
 /** Renders the real Trips routes against a memory repository. Test-only helper. */
 export function renderTrips(
   path: string,
-  opts: { seed?: TripSnapshot[]; repository?: Partial<TripsRepository> } = {},
+  opts: { seed?: TripSnapshot[]; repository?: Partial<TripsRepository>; fx?: FxService } = {},
 ) {
   const base = createMemoryTripsRepository({
     currentUserId: TEST_USER,
@@ -31,7 +32,7 @@ export function renderTrips(
   })
   const repository: TripsRepository = { ...base, ...opts.repository }
   const view = render(
-    <TripsProvider repository={repository}>
+    <TripsProvider repository={repository} fx={opts.fx}>
       <MemoryRouter initialEntries={[path]}>
         <Routes>{tripsRoutes}</Routes>
         <LocationProbe />

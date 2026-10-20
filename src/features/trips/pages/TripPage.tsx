@@ -32,9 +32,11 @@ export function TripPage() {
   const error = useTripsStore((s) => s.tripError[tripId])
   const loadTrip = useTripsStore((s) => s.loadTrip)
 
+  const syncRates = useTripsStore((s) => s.syncRates)
   useEffect(() => {
-    void loadTrip(tripId)
-  }, [loadTrip, tripId])
+    // Load the trip, then refresh stale rates and convert pending expenses in the background.
+    void loadTrip(tripId).then(() => syncRates(tripId))
+  }, [loadTrip, syncRates, tripId])
 
   const me = snapshot ? findCurrentMember(snapshot, userId) : undefined
   const summary = useMemo(
@@ -204,6 +206,11 @@ export function TripPage() {
             ) : (
               <span className="text-[11px] text-[#CFC3F5]">No budget set</span>
             )}
+            {summary.pendingCount > 0 && (
+              <span className="text-[11px] font-bold text-owe-light">
+                {summary.pendingCount} pending
+              </span>
+            )}
           </div>
           <button
             type="button"
@@ -300,7 +307,7 @@ export function TripPage() {
               <span className="text-xs font-bold text-text-muted">
                 {result.items.length} {result.items.length === 1 ? 'expense' : 'expenses'}
                 {filterActive ? ' · filtered' : ''}
-                {result.pendingCount > 0 ? ` · +${result.pendingCount} pending` : ''}
+                {result.pendingCount > 0 ? ` · ${result.pendingCount} pending` : ''}
               </span>
               <b className="text-[13px] tabular-nums">{money(result.totalDefault)}</b>
             </div>
