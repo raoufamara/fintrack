@@ -23,7 +23,7 @@ import {
   type TripsRepository,
 } from '../services/TripsRepository'
 import { newId } from '../services/ids'
-import type { FxSource, SplitMode, TripCategory, TripExpense, TripExpenseShare, TripSettlement } from '../types'
+import type { FxSource, ImportTripPayload, SplitMode, TripCategory, TripExpense, TripExpenseShare, TripSettlement } from '../types'
 
 export type LoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -100,6 +100,8 @@ export interface TripsState {
   loadTrips: () => Promise<void>
   loadTrip: (tripId: string) => Promise<void>
   createTrip: (input: NewTripInput) => Promise<string | null>
+  /** Creates a trip from an import payload. Online only; no toast, the import screen shows the error. */
+  importTrip: (payload: ImportTripPayload) => Promise<{ ok: true; id: string } | { ok: false; error: string; offline: boolean }>
   saveExpense: (input: SaveExpenseInput) => Promise<boolean>
   deleteExpense: (tripId: string, expenseId: string) => Promise<boolean>
   createCategory: (tripId: string, input: CategoryInput) => Promise<CategoryResult>
@@ -357,6 +359,31 @@ export function createTripStore(
           get().showToast('error', `Couldn't create the trip. ${messageOf(err)}`)
           return null
         }
+      },
+
+      async importTrip(payload) {
+        let id: string
+        try {
+          id = await repository.importTrip(payload)
+        } catch (err) {
+          return { ok: false, error: messageOf(err), offline: isNetworkError(err) }
+        }
+        // The trip exists from here on. A failed reload must not be reported as a
+        // failed import (the user would retry and get a duplicate trip); the trip
+        // page loads it again when opened.
+        try {
+          const snap = await repository.getTrip(id)
+          if (snap) {
+            set((state) => ({
+              trips: { ...state.trips, [id]: snap },
+              tripOrder: [id, ...state.tripOrder.filter((t) => t !== id)],
+              tripStatus: { ...state.tripStatus, [id]: 'ready' },
+            }))
+          }
+        } catch {
+          // Ignored on purpose, see above.
+        }
+        return { ok: true, id }
       },
 
       async saveExpense(input) {

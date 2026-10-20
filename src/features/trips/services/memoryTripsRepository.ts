@@ -1,6 +1,8 @@
 import { DEFAULT_CATEGORIES, isDuplicateCategoryName } from '../lib/categories'
+import { minorUnits } from '../lib/currency'
 import { todayISO } from '../lib/dates'
 import { amountDefault } from '../lib/money'
+import { IMPORT_NOTE, MAX_IMPORT_EXPENSES, MAX_IMPORT_MEMBERS, MAX_IMPORT_SETTLEMENTS } from '../lib/splitwiseImport'
 import type { Trip, TripCategory, TripExpense, TripExpenseShare, TripMember, TripSettlement } from '../types'
 import { newId } from './ids'
 import { buildLisbonPortoSeed } from './memorySeed'
@@ -276,6 +278,120 @@ export function createMemoryTripsRepository(options: MemoryRepositoryOptions): M
       return trip.id
     },
 
+    async importTrip(payload) {
+      await write()
+      const bad = (message: string): never => {
+        throw new RepositoryError(message, '22023')
+      }
+      // Mirrors supabase/migrations/003_trip_import.sql: validate everything, then store, all or nothing.
+      const name = payload.trip.name.trim()
+      if (name.length < 1 || name.length > 80) bad('Trip name must be 1-80 characters')
+      const currency = payload.trip.default_currency.trim().toUpperCase()
+      if (!/^[A-Z]{3}$/.test(currency)) bad('Invalid currency code')
+      const { start_date: start, end_date: end } = payload.trip
+      if (start && end && end < start) bad('The end date is before the start date')
+      if (payload.members.length === 0) bad('members must be a non-empty JSON array')
+      if (payload.members.length > MAX_IMPORT_MEMBERS) bad(`Too many members (at most ${MAX_IMPORT_MEMBERS})`)
+      if (payload.expenses.length > MAX_IMPORT_EXPENSES) bad(`Too many expenses (at most ${MAX_IMPORT_EXPENSES})`)
+      if (payload.settlements.length > MAX_IMPORT_SETTLEMENTS) bad(`Too many settlements (at most ${MAX_IMPORT_SETTLEMENTS})`)
+      if (payload.members.filter((m) => m.is_me).length !== 1) bad('Exactly one member must be marked is_me')
+
+      const now = Date.now()
+      const stamp = (offset = 0) => new Date(now + offset).toISOString()
+      const tripId = newId()
+      const memberIds = new Map<string, string>()
+      const members: TripMember[] = payload.members.map((m, i) => {
+        const key = m.key.trim()
+        if (key === '') bad(`Member ${i + 1} needs a key`)
+        if (memberIds.has(key)) bad(`Duplicate member key ${key}`)
+        const display = m.display_name.trim()
+        if (display.length < 1 || display.length > 40) bad(`Member ${i + 1} name must be 1-40 characters`)
+        const id = newId()
+        memberIds.set(key, id)
+        return {
+          id,
+          trip_id: tripId,
+          display_name: display,
+          user_id: m.is_me ? currentUserId : null,
+          color: AVATAR_COLORS[i % AVATAR_COLORS.length] ?? '#DDDDDD',
+          display_currency: null,
+          created_at: stamp(),
+        }
+      })
+      const categories: TripCategory[] = DEFAULT_CATEGORIES.map((c, i) => ({
+        id: newId(), trip_id: tripId, key: c.key, name: c.name, icon: c.icon, color: c.color, sort_order: i,
+        hidden_at: null, created_by_member: null, created_at: stamp(), updated_at: stamp(),
+      }))
+      const categoryIds = new Map(categories.map((c) => [c.key as string, c.id]))
+
+      const expenses: TripExpense[] = []
+      const shares: TripExpenseShare[] = []
+      payload.expenses.forEach((e, i) => {
+        const label = `Expense ${i + 1}`
+        const title = e.title.trim()
+        if (title.length < 1 || title.length > 120) bad(`${label}: title must be 1-120 characters`)
+        if (!(e.amount > 0)) bad(`${label}: amount must be positive`)
+        const ccy = e.currency.trim().toUpperCase()
+        if (!/^[A-Z]{3}$/.test(ccy)) bad(`${label}: invalid currency code`)
+        const categoryId = categoryIds.get(e.category_key)
+        if (!categoryId) bad(`${label}: unknown category`)
+        const paidBy = memberIds.get(e.paid_by_key)
+        if (!paidBy) bad(`${label}: payer is not a member of this trip`)
+        if (!['equal', 'exact', 'shares'].includes(e.split_mode)) bad(`${label}: invalid split mode`)
+        const same = ccy === currency
+        const rate = same ? 1 : e.fx_rate
+        if (rate !== null && !(rate > 0)) bad(`${label}: fx_rate must be positive`)
+        if (!Array.isArray(e.shares) || e.shares.length === 0) bad(`${label}: shares must be a non-empty JSON array`)
+        const seen = new Set<string>()
+        let sum = 0
+        for (const s of e.shares) {
+          if (!memberIds.has(s.member_key) || !(s.amount >= 0)) bad(`${label}: shares contain an invalid member or amount`)
+          if (seen.has(s.member_key)) bad(`${label}: duplicate member in shares`)
+          seen.add(s.member_key)
+          sum += Math.round(s.amount * 1000)
+        }
+        if (sum !== Math.round(e.amount * 1000)) bad(`${label}: shares must sum to the amount`)
+        const id = newId()
+        const at = stamp(i)
+        expenses.push({
+          id, trip_id: tripId, category_id: categoryId!, title, amount: e.amount, currency: ccy,
+          fx_rate: rate, fx_source: rate === null ? null : same ? 'same' : e.fx_source,
+          fx_date: e.fx_date, amount_default: amountDefault(e.amount, ccy, rate, currency),
+          paid_by: paidBy!, split_mode: e.split_mode, date: e.date || todayISO(),
+          note: e.note.trim() || IMPORT_NOTE,
+          place_name: null, place_address: null, place_area: null, place_city: null, place_country: null,
+          place_lat: null, place_lng: null, place_provider_id: null,
+          created_by: currentUserId, client_id: null, created_at: at, updated_at: at,
+        })
+        for (const s of e.shares) {
+          shares.push({ expense_id: id, member_id: memberIds.get(s.member_key)!, weight: 1, amount: s.amount })
+        }
+      })
+
+      const settlements: TripSettlement[] = payload.settlements.map((s, i) => {
+        const label = `Settlement ${i + 1}`
+        const from = memberIds.get(s.from_key)
+        const to = memberIds.get(s.to_key)
+        if (!from || !to) bad(`${label}: both members must belong to this trip`)
+        if (from === to) bad(`${label}: a settlement needs two different members`)
+        const places = 10 ** minorUnits(currency)
+        const amount = Math.round(s.amount * places) / places
+        if (!(amount > 0)) bad(`${label}: amount must be positive`)
+        return {
+          id: newId(), trip_id: tripId, from_member: from!, to_member: to!, amount, currency, fx_rate: 1,
+          client_id: null, created_at: s.date ? `${s.date}T12:00:00.000Z` : stamp(),
+        }
+      })
+
+      const trip: Trip = {
+        id: tripId, name, default_currency: currency, start_date: start, end_date: end, budget_amount: null,
+        invite_code: newId().slice(0, 8), share_token: newId().replace(/-/g, ''), share_enabled: true,
+        created_by: currentUserId, archived_at: null, created_at: stamp(),
+      }
+      db.set(tripId, { trip, members, categories, expenses, shares, settlements })
+      return tripId
+    },
+
     async saveExpense(expense: TripExpense, shares: TripExpenseShare[]) {
       await write()
       const snap = db.get(expense.trip_id)
@@ -451,7 +567,7 @@ export function createMemoryTripsRepository(options: MemoryRepositoryOptions): M
   // After every write, tell subscribers (other devices) about what changed.
   const target = repo as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>
   for (const name of [
-    'createTrip', 'saveExpense', 'deleteExpense', 'setDefaultCurrency', 'createCategory', 'updateCategory',
+    'createTrip', 'importTrip', 'saveExpense', 'deleteExpense', 'setDefaultCurrency', 'createCategory', 'updateCategory',
     'deleteCategory', 'reorderCategories', 'setShareEnabled', 'rotateShareToken', 'recordSettlement', 'addMember', 'joinTrip', 'updateMyDisplayCurrency',
   ]) {
     const original = target[name]

@@ -163,3 +163,58 @@ export interface FilterResult {
   /** Expenses without a location that the place facet is currently hiding. */
   hiddenNoLocationCount: number
 }
+
+/**
+ * Wire format of the `import_trip` RPC (supabase/migrations/003_trip_import.sql).
+ * Rows refer to each other by client-side keys; the server resolves them to ids.
+ * Amounts are decimals in major units.
+ */
+export interface ImportMemberInput {
+  key: string
+  display_name: string
+  /** Exactly one member: the importing user's own. */
+  is_me: boolean
+}
+
+export interface ImportShareInput {
+  member_key: string
+  /** In the expense's currency. */
+  amount: number
+}
+
+export interface ImportExpenseInput {
+  title: string
+  amount: number
+  currency: string
+  /** Null leaves the expense pending. */
+  fx_rate: number | null
+  fx_source: FxSource | null
+  fx_date: string | null
+  /** One of the seeded category keys ('stay', 'food', ...). */
+  category_key: string
+  paid_by_key: string
+  split_mode: SplitMode
+  date: string
+  note: string
+  shares: ImportShareInput[]
+}
+
+export interface ImportSettlementInput {
+  from_key: string
+  to_key: string
+  /** In the trip default currency. */
+  amount: number
+  date: string
+}
+
+export interface ImportTripPayload {
+  trip: {
+    name: string
+    default_currency: string
+    start_date: string | null
+    end_date: string | null
+  }
+  members: ImportMemberInput[]
+  expenses: ImportExpenseInput[]
+  settlements: ImportSettlementInput[]
+}

@@ -108,6 +108,14 @@ export function createSupabaseTripsRepository(
         p_member_names: input.memberNames,
       }),
 
+    importTrip: (payload) =>
+      rpc<string>('import_trip', {
+        p_trip: payload.trip,
+        p_members: payload.members,
+        p_expenses: payload.expenses,
+        p_settlements: payload.settlements,
+      }),
+
     async saveExpense(expense, shares) {
       await rpc('upsert_trip_expense', {
         p_expense: {

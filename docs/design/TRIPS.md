@@ -47,6 +47,7 @@ Add a **Trips** tab to `AppLayout` between Home and Insights, using the lucide i
 /trips                              Trips list                     (screen 1)
 /trips/new                          Create trip (name, dates, default currency, members, budget)
 /trips/join/:code                   Join via invite code/link
+/trips/import                       Import a Splitwise CSV as a new trip
 /trips/:tripId                      Trip expenses (main)           (screen 2)
    ?cat=<id>,<id>&place=Lisbon,none&payer=<memberId>&from=2026-10-03&to=2026-10-10&mine=1&q=tram
 /trips/:tripId/filters              Filter sheet (overlay)         (screen 3; filtered result is screen 4)
@@ -645,3 +646,58 @@ The existing `--color-cat-*` tokens are used by personal budgeting. Name the new
 | 5 | Trip expenses → personal budget? | **No.** Trips and personal budgeting stay fully separate. |
 | 6 | Guests without an account? | **Yes, read-only** via a share link, using "Who are you?" and join-as-member (§4.11). |
 | 7 | Show amounts in my own currency? | **Yes, display only**, using the latest cached rate, marked with "≈" (§4.12). |
+
+---
+
+## 13. Import & export
+
+Import creates a **new trip** from a Splitwise group export. Export writes any trip as a CSV in the same layout, so the two round-trip. Code: `lib/splitwiseCsv.ts` (parser), `lib/splitwiseImport.ts` (mapping, verification, payload), `lib/splitwiseExport.ts`, `pages/ImportPage.tsx`, and the RPC `import_trip` in `supabase/migrations/003_trip_import.sql`.
+
+### 13.1 CSV format
+
+Splitwise: group, Settings, "Export as spreadsheet". The format below is based on public knowledge **and one real export** (`lib/__fixtures__/splitwise-real-export.csv`, two people, one currency). **Verify against more real exports**, especially groups with several currencies, more than two people, and non-English accounts.
+
+```
+Date,Description,Category,Cost,Currency,Sara Lopez,Malik B,Inès,Raouf
+(blank line: the real export has one right after the header)
+2026-10-03,Airbnb Alfama,Hotel,480.00,EUR,360.00,-120.00,-120.00,-120.00
+2026-10-09,Malik B paid Sara Lopez,Payment,50.00,EUR,-50.00,50.00,0.00,0.00
+
+2026-10-20,Total balance, , ,EUR,288.40,-91.60,-141.60,-55.20
+```
+
+- **Columns are found by name** (case-insensitive). Everything after `Currency` is a person; their names are taken from the header, **never from descriptions** (the real export shortens them: "Alex M. paid Sam").
+- A person's cell is that person's **net effect on their balance** for the row: positive means they paid more than their share. Each row sums to about 0.
+- **Payments:** Category `Payment`, and also a row whose description is exactly "Settle all balances" (the real export gives that one the category General). The positive person paid the negative one. Without this rule, group spending would be inflated.
+- **Total balance rows** (one per currency, the date is the export date, Category and Cost hold a space) are used only to verify; they are never imported.
+- Tolerated: UTF-8 BOM, CRLF, quoted fields, blank lines anywhere, spaces and `,`/`.` decimal marks in numbers, `;` or tab delimiters, accents, mixed currencies. Dates: `YYYY-MM-DD` preferred; `DD/MM/YYYY` and `MM/DD/YYYY` are fallbacks, and ambiguous ones are flagged with a warning (read as day/month unless other rows show otherwise). Windows-1252 files are decoded when the bytes are not valid UTF-8.
+
+### 13.2 Mapping
+
+| Splitwise row | Result |
+|---|---|
+| One positive person P | Expense paid by P, split mode `exact`. Shares are `-n` for every negative person; P's share is the rest (`cost - sum of the others`). If it is 0, P is left out of the shares (P paid it all for someone else). Odd cents land on the payer: cost 6.29, nets 3.14 / -3.14 gives P a share of 3.15. |
+| Several positive people | The largest is the payer. Each other payer j adds a **balancing payment** j to P of `n_j`, so everyone ends at their `n`. Warning: "row N had several payers". |
+| Nets differ from 0 by 1-2 units | Absorbed into the payer's share. More than 2 units: same, plus a warning. |
+| All nets 0, or cost 0 | Skipped with a warning (no effect on balances). |
+| Shares that cannot add up | Row refused ("Row N: ...") and counted as skipped. |
+| Payment | Settlement from the positive to the negative person; with more than two people, matched greedily. |
+
+Categories use a case-insensitive keyword map on the Splitwise category (for "X - Other" the part before " - "), then on the description, else `other`: stay (hotel, rent, lodging, accommodation, airbnb); food (dining, food and drink, restaurant, liquor, coffee); groceries (groceries, water); transport (transportation, taxi, bus, train, plane, flight, car, gas, fuel, parking, bicycle); activity (entertainment, movies, music, sports, games, tickets); shopping (clothing, electronics, gifts, household, furniture); fees (taxes, insurance, services, utilities, medical, cleaning). The preview shows the summary ("Hotel → Stay · 3").
+
+- **Members:** one per person column. "Which one is you?" is required; that member gets the importer's account and keeps the Splitwise name. Others are name-only and can be claimed from the invite link.
+- **Trip name:** from the file name without `splitwise`, `expenses`, `export`, dates and month names; if nothing is left, "Trip · Feb 2024" or "Trip · Feb – Mar 2024" from the expense dates. **Dates** are the first and last expense. **Default currency** is the most frequent row currency. All three are editable in the preview.
+- **Currencies:** each expense keeps its currency; `fx_rate` comes from `fxService.getRate(rowCcy, default, date)` at import time. No rate means the expense is saved pending and converts later (the success screen says so). **Payments are stored in the default currency**; if a payment needs a rate that is unavailable, the import is blocked: "Connect to the internet to import payments in other currencies".
+- **Verification:** balances are computed with `computeBalances` per currency, in each row's own currency, and compared with the Total balance rows (tolerance 1 minor unit per person). The success screen shows "Balances match Splitwise" or the differences. A file without Total balance rows is reported as not compared.
+- Limits: 50 people, 5,000 expenses, 2,000 payments, 5 MB.
+
+### 13.3 `import_trip` RPC
+
+`import_trip(p_trip jsonb, p_members jsonb, p_expenses jsonb, p_settlements jsonb) returns uuid`, `security definer`, `set search_path = public`, granted to `authenticated` only. It runs in one transaction, creates the trip like `create_trip` (same 8 categories; `create_trip` is unchanged), and validates every expense like `upsert_trip_expense` (title, amount, currency, split mode, shares >= 0 with no duplicates summing exactly to the amount, `fx_rate`, `amount_default` with `round_half_even`). Members and categories are referenced by client-side keys (`member_key`, `paid_by_key`, `category_key`). Expenses get the note "Imported from Splitwise", `created_by = auth.uid()` and a null `client_id`. Online only: there is no retry queue for imports. The memory repository mirrors the same rules. Assertions: `supabase/tests/003_trip_import.sql`.
+
+### 13.4 Export
+
+Trip Settings, "Export CSV" (not available to guests). The file has the same columns, one column per member with the net effect of each row, payments as `Payment` rows described "{from} paid {to}", then a blank line and one `Total balance` row per currency present. Expenses keep their own currency; the Category column holds our category name. RFC 4180 quoting with CRLF; cells that start with `=`, `+`, `@` or a minus before a non-digit get a leading apostrophe so a spreadsheet does not run them as formulas. Delivery: the share sheet when it can share files (iPhone home-screen app), otherwise a download. File name: `{trip-name-slug}-fintrack-{YYYY-MM-DD}.csv`.
+
+Known limits of the round trip: balances are preserved exactly; an expense where the payer owes the whole amount (all nets 0) is not re-imported, because it has no effect; and the default currency, budget, places and exchange rates are not part of the file.
+
