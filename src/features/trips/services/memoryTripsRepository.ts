@@ -1,9 +1,15 @@
-import { DEFAULT_CATEGORIES } from '../lib/categories'
+import { DEFAULT_CATEGORIES, isDuplicateCategoryName } from '../lib/categories'
 import { todayISO } from '../lib/dates'
 import type { Trip, TripCategory, TripExpense, TripExpenseShare, TripMember } from '../types'
 import { newId } from './ids'
 import { buildLisbonPortoSeed } from './memorySeed'
-import type { NewTripInput, TripSnapshot, TripsRepository } from './TripsRepository'
+import {
+  DUPLICATE_CODE,
+  RepositoryError,
+  type NewTripInput,
+  type TripSnapshot,
+  type TripsRepository,
+} from './TripsRepository'
 
 export interface MemoryRepositoryOptions {
   currentUserId: string
@@ -23,6 +29,14 @@ export function createMemoryTripsRepository(options: MemoryRepositoryOptions): T
   const db = new Map<string, TripSnapshot>()
   for (const snap of options.seed ?? [buildLisbonPortoSeed(currentUserId, todayISO())]) {
     db.set(snap.trip.id, clone(snap))
+  }
+
+  const findCategory = (categoryId: string) => {
+    for (const snap of db.values()) {
+      const category = snap.categories.find((c) => c.id === categoryId)
+      if (category) return { snap, category }
+    }
+    return null
   }
 
   const wait = () => (latencyMs > 0 ? new Promise<void>((r) => setTimeout(r, latencyMs)) : Promise.resolve())
@@ -110,6 +124,96 @@ export function createMemoryTripsRepository(options: MemoryRepositoryOptions): T
         }
       }
       throw new Error('Expense not found')
+    },
+
+    async createCategory(tripId, input) {
+      await wait()
+      const snap = db.get(tripId)
+      if (!snap) throw new Error('Trip not found')
+      const name = input.name.trim()
+      if (name.length < 1 || name.length > 24) throw new Error('Name must be 1-24 characters')
+      if (isDuplicateCategoryName(name, snap.categories)) {
+        throw new RepositoryError(`There's already a category called ${name}`, DUPLICATE_CODE)
+      }
+      const now = new Date().toISOString()
+      const me = snap.members.find((m) => m.user_id === currentUserId)
+      const category: TripCategory = {
+        id: newId(),
+        trip_id: tripId,
+        key: null,
+        name,
+        icon: input.icon,
+        color: input.color,
+        sort_order: Math.max(-1, ...snap.categories.map((c) => c.sort_order)) + 1,
+        hidden_at: null,
+        created_by_member: me?.id ?? null,
+        created_at: now,
+        updated_at: now,
+      }
+      snap.categories.push(category)
+      return category.id
+    },
+
+    async updateCategory(categoryId, patch) {
+      await wait()
+      const found = findCategory(categoryId)
+      if (!found) throw new Error('Category not found')
+      const { snap, category } = found
+      if (patch.name !== undefined) {
+        const name = patch.name.trim()
+        if (name.length < 1 || name.length > 24) throw new Error('Name must be 1-24 characters')
+        if (isDuplicateCategoryName(name, snap.categories, categoryId)) {
+          throw new RepositoryError(`There's already a category called ${name}`, DUPLICATE_CODE)
+        }
+        category.name = name
+      }
+      if (patch.hidden === true && category.hidden_at === null) {
+        if (!snap.categories.some((c) => c.id !== categoryId && c.hidden_at === null)) {
+          throw new Error('The last visible category cannot be hidden')
+        }
+        category.hidden_at = new Date().toISOString()
+      }
+      if (patch.hidden === false) category.hidden_at = null
+      if (patch.icon !== undefined) category.icon = patch.icon
+      if (patch.color !== undefined) category.color = patch.color
+      category.updated_at = new Date().toISOString()
+    },
+
+    async deleteCategory(categoryId, moveTo) {
+      await wait()
+      const found = findCategory(categoryId)
+      if (!found) throw new Error('Category not found')
+      const { snap, category } = found
+      if (category.hidden_at === null && !snap.categories.some((c) => c.id !== categoryId && c.hidden_at === null)) {
+        throw new Error('The last visible category cannot be deleted')
+      }
+      const affected = snap.expenses.filter((e) => e.category_id === categoryId)
+      if (moveTo !== null) {
+        if (moveTo === categoryId || !snap.categories.some((c) => c.id === moveTo)) {
+          throw new Error('Target category does not belong to this trip')
+        }
+      } else if (affected.length > 0) {
+        throw new Error(`Category has ${affected.length} expenses; move_to is required`)
+      }
+      for (const e of affected) e.category_id = moveTo as string
+      snap.categories = snap.categories.filter((c) => c.id !== categoryId)
+    },
+
+    async reorderCategories(tripId, orderedIds) {
+      await wait()
+      const snap = db.get(tripId)
+      if (!snap) throw new Error('Trip not found')
+      if (new Set(orderedIds).size !== orderedIds.length || orderedIds.some((id) => !snap.categories.some((c) => c.id === id))) {
+        throw new Error('ordered_ids must be distinct categories of this trip')
+      }
+      const rest = snap.categories
+        .filter((c) => !orderedIds.includes(c.id))
+        .sort((a, b) => a.sort_order - b.sort_order)
+        .map((c) => c.id)
+      ;[...orderedIds, ...rest].forEach((id, i) => {
+        const c = snap.categories.find((x) => x.id === id)
+        if (c) c.sort_order = i
+      })
     },
   }
 }

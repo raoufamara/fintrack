@@ -78,3 +78,14 @@ export function isDuplicateCategoryName(
     (c) => c.id !== ignoreId && normalizeCategoryName(c.name) === target,
   )
 }
+
+/** Colour used by the fewest categories on the trip (palette order breaks ties). */
+export function leastUsedColor(categories: ReadonlyArray<{ color: CategoryColorKey }>): CategoryColorKey {
+  const counts = new Map<CategoryColorKey, number>(CATEGORY_COLOR_KEYS.map((k) => [k, 0]))
+  for (const c of categories) counts.set(c.color, (counts.get(c.color) ?? 0) + 1)
+  let best = CATEGORY_COLOR_KEYS[0] ?? 'blue'
+  for (const key of CATEGORY_COLOR_KEYS) if ((counts.get(key) ?? 0) < (counts.get(best) ?? 0)) best = key
+  return best
+}
+
+

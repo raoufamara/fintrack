@@ -1,5 +1,5 @@
 import { formatMoney } from '../lib/currency'
-import { computeBalances, suggestTransfers } from '../lib/balances'
+import { computeBalances, expenseTotalDefault, suggestTransfers } from '../lib/balances'
 import { filterExpenses, EMPTY_FILTER } from '../lib/filter'
 import type { Transfer, TripCategory, TripExpense, TripMember } from '../types'
 import type { TripSnapshot } from '../services/TripsRepository'
@@ -89,3 +89,21 @@ export function isOngoing(trip: { start_date: string | null; end_date: string | 
   return !!trip.start_date && !!trip.end_date && today >= trip.start_date && today <= trip.end_date
 }
 
+
+export function expenseCountByCategory(expenses: readonly TripExpense[]): Map<string, number> {
+  const counts = new Map<string, number>()
+  for (const e of expenses) counts.set(e.category_id, (counts.get(e.category_id) ?? 0) + 1)
+  return counts
+}
+
+/** Categories used on this trip (hidden ones included), by default-currency spend descending, ties by sort_order. */
+export function usedCategoriesBySpend(snap: TripSnapshot): TripCategory[] {
+  const spend = new Map<string, number>()
+  const currency = snap.trip.default_currency
+  for (const e of snap.expenses) {
+    spend.set(e.category_id, (spend.get(e.category_id) ?? 0) + (expenseTotalDefault(e, currency) ?? 0))
+  }
+  return snap.categories
+    .filter((c) => spend.has(c.id))
+    .sort((a, b) => (spend.get(b.id) ?? 0) - (spend.get(a.id) ?? 0) || a.sort_order - b.sort_order)
+}

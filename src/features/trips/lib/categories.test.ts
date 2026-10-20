@@ -70,3 +70,12 @@ describe('SQL sync', () => {
     }
   })
 })
+
+describe('leastUsedColor', () => {
+  it('picks the colour used least, in palette order on ties', async () => {
+    const { leastUsedColor } = await import('./categories')
+    expect(leastUsedColor([])).toBe('blue')
+    expect(leastUsedColor(DEFAULT_CATEGORIES)).toBe('blue')
+    expect(leastUsedColor([{ color: 'blue' }, { color: 'rust' }, { color: 'teal' }])).toBe('purple')
+  })
+})

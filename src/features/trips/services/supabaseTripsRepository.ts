@@ -7,7 +7,7 @@ import type {
   TripMember,
   TripSettlement,
 } from '../types'
-import type { NewTripInput, TripSnapshot, TripsRepository } from './TripsRepository'
+import { RepositoryError, type NewTripInput, type TripSnapshot, type TripsRepository } from './TripsRepository'
 
 /**
  * Supabase implementation. The client is injected, so this file never imports
@@ -74,7 +74,7 @@ export function createSupabaseTripsRepository(
 
   async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
     const { data, error } = await client.rpc(fn, args)
-    if (error) throw new Error(error.message)
+    if (error) throw new RepositoryError(error.message, error.code)
     return data as T
   }
 
@@ -129,6 +129,32 @@ export function createSupabaseTripsRepository(
 
     async deleteExpense(expenseId) {
       await rpc('delete_trip_expense', { p_expense_id: expenseId })
+    },
+
+    createCategory: (tripId, input) =>
+      rpc<string>('create_trip_category', {
+        p_trip_id: tripId,
+        p_name: input.name,
+        p_icon: input.icon,
+        p_color: input.color,
+      }),
+
+    async updateCategory(categoryId, patch) {
+      const update: Record<string, unknown> = {}
+      if (patch.name !== undefined) update.name = patch.name.trim()
+      if (patch.icon !== undefined) update.icon = patch.icon
+      if (patch.color !== undefined) update.color = patch.color
+      if (patch.hidden !== undefined) update.hidden_at = patch.hidden ? new Date().toISOString() : null
+      const { error } = await client.from('trip_categories').update(update).eq('id', categoryId)
+      if (error) throw new RepositoryError(error.message, error.code)
+    },
+
+    async deleteCategory(categoryId, moveTo) {
+      await rpc('delete_trip_category', { p_category_id: categoryId, p_move_to: moveTo })
+    },
+
+    async reorderCategories(tripId, orderedIds) {
+      await rpc('reorder_trip_categories', { p_trip_id: tripId, p_ordered_ids: orderedIds })
     },
   }
 }
