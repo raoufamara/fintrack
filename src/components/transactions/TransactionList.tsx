@@ -53,7 +53,7 @@ export function TransactionList({ limit, month, categoryId, refreshKey }: Transa
             {/* Category icon dot */}
             <div
               className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
-              style={{ backgroundColor: category ? `${category.color}20` : '#F3EDFE' }}
+              style={{ backgroundColor: category ? `${category.color}20` : '#E3F4F2' }}
             >
               <span
                 className="w-3 h-3 rounded-full"

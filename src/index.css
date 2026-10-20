@@ -2,10 +2,10 @@
 
 @theme {
   /* Primary */
-  --color-primary: #7340FE;
-  --color-primary-dark: #2F1D4F;
-  --color-primary-light: #F3EDFE;
-  --color-primary-tint: #F4F0FF;
+  --color-primary: #0B7A77;
+  --color-primary-dark: #0B3B3D;
+  --color-primary-light: #E3F4F2;
+  --color-primary-tint: #EEF8F7;
 
   /* Surfaces */
   --color-surface: #FFFFFF;
@@ -61,7 +61,7 @@
   --color-text-muted: #6F6F6F;
   --color-owe: #B25E00;
   --color-owe-light: #FFC46B;
-  --color-sheet-scrim: rgba(24, 16, 40, 0.6);
+  --color-sheet-scrim: rgba(8, 28, 30, 0.6);
 
   --color-tripcat-blue: #1460D8;   --color-tripcat-blue-bg: #E3EEFF;
   --color-tripcat-rust: #B8470F;   --color-tripcat-rust-bg: #FFF1E6;

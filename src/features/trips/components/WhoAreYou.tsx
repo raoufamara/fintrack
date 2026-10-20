@@ -35,13 +35,13 @@ export function WhoAreYou({ members, pickedId, onPick, transfers, currency }: Wh
       </div>
       <div className="flex flex-col gap-1.5 border-t border-white/15 pt-2.5" aria-live="polite">
         {!picked ? (
-          <span className="text-[13px] text-[#CFC3F5]">Pick your name to see your balance.</span>
+          <span className="text-[13px] text-[#A9DCD7]">Pick your name to see your balance.</span>
         ) : transfers.length === 0 ? (
-          <span className="text-[13px] text-[#CFC3F5]">{picked.display_name} is settled up</span>
+          <span className="text-[13px] text-[#A9DCD7]">{picked.display_name} is settled up</span>
         ) : (
           transfers.map((t) => (
             <div key={`${t.from}-${t.to}`} className="flex items-center justify-between gap-2">
-              <span className="text-[13px] text-[#CFC3F5]">
+              <span className="text-[13px] text-[#A9DCD7]">
                 {name(t.from)} owes {name(t.to)} {formatMoney(t.amount, currency)}
               </span>
             </div>

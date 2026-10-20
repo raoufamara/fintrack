@@ -29,7 +29,7 @@ export function FeaturedTripCard({ snapshot, userId, onOpen, today = todayISO() 
       <span className="flex items-start justify-between gap-2">
         <span className="flex min-w-0 flex-1 flex-col gap-1">
           <span className="text-xl font-extrabold">{trip.name}</span>
-          <span className="text-[13px] font-semibold text-[#CFC3F5]">
+          <span className="text-[13px] font-semibold text-[#A9DCD7]">
             {range ? `${range} · ` : ''}
             {snapshot.members.length} {snapshot.members.length === 1 ? 'person' : 'people'} ·{' '}
             {trip.default_currency}
@@ -44,12 +44,12 @@ export function FeaturedTripCard({ snapshot, userId, onOpen, today = todayISO() 
       <span className="flex justify-between text-[13px] font-bold tabular-nums">
         <span>{formatMoney(summary.spent, trip.default_currency)} spent</span>
         {budget !== null && (
-          <span className="text-[#CFC3F5]">{formatMoney(budget, trip.default_currency)} budget</span>
+          <span className="text-[#A9DCD7]">{formatMoney(budget, trip.default_currency)} budget</span>
         )}
       </span>
       {budget !== null && (
         <span className="block h-2 overflow-hidden rounded bg-white/15">
-          <i className="block h-full bg-[#B9A1FF]" style={{ width: `${pct}%` }} />
+          <i className="block h-full bg-[#6FD0C6]" style={{ width: `${pct}%` }} />
         </span>
       )}
       <span className="text-[13px] font-bold text-owe-light">{balanceLine(snapshot, userId)}</span>

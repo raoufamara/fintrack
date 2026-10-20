@@ -270,7 +270,7 @@ export function ImportPage() {
             <legend className="mb-1 text-[13px] font-extrabold text-gray-700">Which one is you?</legend>
             {plan.members.map((m) => (
               <label key={m.key} className="flex min-h-12 cursor-pointer items-center gap-3 rounded-[12px] border border-gray-300 bg-surface px-3.5 has-[:checked]:border-2 has-[:checked]:border-primary">
-                <input type="radio" name="me" value={m.key} checked={me === m.key} onChange={() => setMe(m.key)} className="h-5 w-5 accent-[#7340FE]" />
+                <input type="radio" name="me" value={m.key} checked={me === m.key} onChange={() => setMe(m.key)} className="h-5 w-5 accent-primary" />
                 <span className="text-[15px] font-semibold">{m.name}</span>
               </label>
             ))}
@@ -335,7 +335,7 @@ export function ImportPage() {
             type="button"
             disabled={!canImport}
             onClick={() => void runImport()}
-            className="h-14 w-full rounded-full bg-primary text-base font-bold text-white disabled:bg-[#C9C2DA]"
+            className="h-14 w-full rounded-full bg-primary text-base font-bold text-white disabled:bg-[#B5CFCC]"
           >
             Import trip
           </button>
@@ -369,7 +369,7 @@ export function ImportPage() {
             type="button"
             onClick={() => inputRef.current?.click()}
             disabled={reading}
-            className="h-12 rounded-full bg-primary px-6 text-[15px] font-bold text-white disabled:bg-[#C9C2DA]"
+            className="h-12 rounded-full bg-primary px-6 text-[15px] font-bold text-white disabled:bg-[#B5CFCC]"
           >
             {reading ? 'Reading…' : 'Choose file'}
           </button>

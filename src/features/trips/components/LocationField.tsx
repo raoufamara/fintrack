@@ -48,7 +48,7 @@ export function LocationField({ place, onChange, onSearch }: LocationFieldProps)
             type="button"
             onClick={() => void locateHere()}
             disabled={here.status === 'locating'}
-            className="flex h-12 min-w-0 flex-1 items-center gap-2 overflow-hidden whitespace-nowrap rounded-[12px] border border-dashed border-[#B9A1FF] bg-primary-tint px-3 text-[13px] font-bold text-primary"
+            className="flex h-12 min-w-0 flex-1 items-center gap-2 overflow-hidden whitespace-nowrap rounded-[12px] border border-dashed border-[#6FD0C6] bg-primary-tint px-3 text-[13px] font-bold text-primary"
           >
             <Navigation size={16} aria-hidden="true" className="shrink-0" />
             <span className="truncate">

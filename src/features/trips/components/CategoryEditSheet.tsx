@@ -207,7 +207,7 @@ function EditBody({
       <button
         type="submit"
         disabled={saving}
-        className="h-14 w-full rounded-full bg-primary text-base font-bold text-white disabled:bg-[#C9C2DA]"
+        className="h-14 w-full rounded-full bg-primary text-base font-bold text-white disabled:bg-[#B5CFCC]"
       >
         {existing ? 'Save' : 'Add category'}
       </button>
