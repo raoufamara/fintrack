@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { ChevronRight, Trash2 } from 'lucide-react'
+import { ChevronRight, Plus, Trash2 } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { BottomSheet } from '../components/BottomSheet'
+import { CategoryEditSheet } from '../components/CategoryEditSheet'
 import { CategoryIcon } from '../components/CategoryIcon'
 import { PayerSheet } from '../components/PayerSheet'
 import { ErrorState, Screen, Spinner, TopBar } from '../components/Screen'
@@ -78,16 +79,17 @@ function ExpenseForm({ snapshot, expenseId }: { snapshot: TripSnapshot; expenseI
   )
   const [date, setDate] = useState(existing?.date ?? todayISO())
   const [submitted, setSubmitted] = useState(false)
-  const [sheet, setSheet] = useState<'payer' | 'split' | 'delete' | null>(null)
+  const [sheet, setSheet] = useState<'payer' | 'split' | 'delete' | 'category' | null>(null)
 
   const { errors, amountMinor } = validateExpenseForm({ amount, title, date, categoryId, currency })
   const show = submitted ? errors : {}
 
   const categories = useMemo(() => {
     const visible = visibleCategories(snapshot.categories)
-    const current = snapshot.categories.find((c) => c.id === existing?.category_id)
+    // A selected category stays in the grid even if it was hidden meanwhile.
+    const current = snapshot.categories.find((c) => c.id === categoryId)
     return current && !visible.some((c) => c.id === current.id) ? [...visible, current] : visible
-  }, [snapshot.categories, existing?.category_id])
+  }, [snapshot.categories, categoryId])
 
   const payer = members.find((m) => m.id === paidBy)
   const splitLabel = isCustomSplit
@@ -204,7 +206,16 @@ function ExpenseForm({ snapshot, expenseId }: { snapshot: TripSnapshot; expenseI
           </div>
 
           <div className="flex flex-col gap-1.5" role="group" aria-label="Category">
-            <span className="text-[13px] font-extrabold text-gray-700">Category</span>
+            <div className="flex items-center justify-between">
+              <span className="text-[13px] font-extrabold text-gray-700">Category</span>
+              <button
+                type="button"
+                onClick={() => navigate(`/trips/${trip.id}/categories`)}
+                className="h-9 px-1 text-[13px] font-bold text-primary"
+              >
+                Edit
+              </button>
+            </div>
             <div className="grid grid-cols-4 gap-2">
               {categories.map((c) => {
                 const on = c.id === categoryId
@@ -230,6 +241,14 @@ function ExpenseForm({ snapshot, expenseId }: { snapshot: TripSnapshot; expenseI
                   </button>
                 )
               })}
+              <button
+                type="button"
+                onClick={() => setSheet('category')}
+                className="flex h-16 flex-col items-center justify-center gap-1 rounded-[14px] border border-dashed border-[#B9A1FF] bg-primary-tint px-1 text-[11px] font-bold text-primary"
+              >
+                <Plus size={20} aria-hidden="true" />
+                <span>New</span>
+              </button>
             </div>
             {show.category && (
               <span role="alert" className="text-xs font-bold text-error">
@@ -276,6 +295,12 @@ function ExpenseForm({ snapshot, expenseId }: { snapshot: TripSnapshot; expenseI
         </div>
       </form>
 
+      <CategoryEditSheet
+        open={sheet === 'category'}
+        onClose={() => setSheet(null)}
+        tripId={trip.id}
+        onCreated={setCategoryId}
+      />
       <PayerSheet
         open={sheet === 'payer'}
         onClose={() => setSheet(null)}

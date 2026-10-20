@@ -12,7 +12,12 @@ export const TEST_USER = 'u-you'
 
 function LocationProbe() {
   const location = useLocation()
-  return <div data-testid="location">{location.pathname}</div>
+  return (
+    <>
+      <div data-testid="location">{location.pathname}</div>
+      <div data-testid="search">{location.search}</div>
+    </>
+  )
 }
 
 /** Renders the real Trips routes against a memory repository. Test-only helper. */

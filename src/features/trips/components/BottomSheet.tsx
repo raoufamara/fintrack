@@ -10,13 +10,15 @@ interface BottomSheetProps {
   onClose: () => void
   title: string
   children: ReactNode
+  /** Optional action in the header, left of the close button (e.g. Reset). */
+  headerAction?: ReactNode
 }
 
 /**
  * Modal sheet: traps focus, closes on Esc and on a scrim tap, and returns
  * focus to the element that opened it.
  */
-export function BottomSheet({ open, onClose, title, children }: BottomSheetProps) {
+export function BottomSheet({ open, onClose, title, children, headerAction }: BottomSheetProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   const onCloseRef = useRef(onClose)
   const titleId = useId()
@@ -90,6 +92,8 @@ export function BottomSheet({ open, onClose, title, children }: BottomSheetProps
           <h2 id={titleId} className="text-xl font-extrabold">
             {title}
           </h2>
+          <div className="flex items-center gap-1">
+          {headerAction}
           <button
             type="button"
             data-sheet-close
@@ -99,6 +103,7 @@ export function BottomSheet({ open, onClose, title, children }: BottomSheetProps
           >
             <X size={22} />
           </button>
+          </div>
         </div>
         <div className="flex flex-col gap-4 overflow-y-auto px-5 pb-6 pt-1">{children}</div>
       </div>

@@ -1,14 +1,17 @@
-import { useEffect, useMemo } from 'react'
-import { ChevronLeft, PieChart, Plus, Scale, Settings } from 'lucide-react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronLeft, PieChart, Plus, Scale, Search, Settings, SlidersHorizontal, X } from 'lucide-react'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { CategoryChipRow } from '../components/CategoryChipRow'
+import { FilterSheet } from '../components/FilterSheet'
 import { ExpenseRow } from '../components/ExpenseRow'
 import { MemberAvatar } from '../components/MemberAvatar'
 import { ErrorState, Screen, Spinner } from '../components/Screen'
 import { formatMoney, toMinor } from '../lib/currency'
 import { formatDay, formatRange, todayISO } from '../lib/dates'
-import type { TripExpense } from '../types'
+import { countActiveFilters, EMPTY_FILTER, filterExpenses, parseFilter, serializeFilter } from '../lib/filter'
+import type { TripExpense, TripExpenseFilter } from '../types'
 import { useCurrentUserId, useTripsStore } from '../store/TripsContext'
-import { findCurrentMember, sortExpenses, summarizeTrip } from '../store/selectors'
+import { findCurrentMember, sortExpenses, summarizeTrip, usedCategoriesBySpend } from '../store/selectors'
 
 function groupByDay(expenses: readonly TripExpense[]): Array<[string, TripExpense[]]> {
   const groups = new Map<string, TripExpense[]>()
@@ -39,7 +42,65 @@ export function TripPage() {
     [snapshot, me?.id],
   )
 
-  if (!snapshot || !summary) {
+  const [params, setParams] = useSearchParams()
+  const categoryIdsKey = snapshot?.categories.map((c) => c.id).join(',') ?? ''
+  const memberIdsKey = snapshot?.members.map((m) => m.id).join(',') ?? ''
+  // Ids that no longer exist (deleted categories) are dropped from the active filter.
+  const filter = useMemo<TripExpenseFilter>(() => {
+    const parsed = parseFilter(params)
+    if (!snapshot) return parsed
+    const catIds = new Set(categoryIdsKey.split(','))
+    const memberIds = new Set(memberIdsKey.split(','))
+    return {
+      ...parsed,
+      categoryIds: parsed.categoryIds.filter((id) => catIds.has(id)),
+      payer: parsed.payer && memberIds.has(parsed.payer) ? parsed.payer : null,
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params, categoryIdsKey, memberIdsKey, !!snapshot])
+  const filterRef = useRef(filter)
+  useEffect(() => {
+    filterRef.current = filter
+  })
+  const updateFilter = useCallback(
+    (next: TripExpenseFilter, mode: 'push' | 'replace' = 'push') =>
+      setParams(serializeFilter(next), { replace: mode === 'replace' }),
+    [setParams],
+  )
+
+  // Search box: local text, committed to the URL after a short pause.
+  const [searchText, setSearchText] = useState(filter.q)
+  const committedQ = useRef(filter.q)
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => {
+    if (filter.q !== committedQ.current) {
+      committedQ.current = filter.q
+      setSearchText(filter.q)
+    }
+  }, [filter.q])
+  useEffect(() => () => clearTimeout(timer.current), [])
+  const onSearch = (value: string) => {
+    setSearchText(value)
+    clearTimeout(timer.current)
+    timer.current = setTimeout(() => {
+      committedQ.current = value.trim()
+      updateFilter({ ...filterRef.current, q: value.trim() }, 'replace')
+    }, 150)
+  }
+  const [sheetOpen, setSheetOpen] = useState(false)
+
+  const result = useMemo(
+    () =>
+      snapshot
+        ? filterExpenses(snapshot.expenses, snapshot.shares, filter, {
+            defaultCurrency: snapshot.trip.default_currency,
+            currentMemberId: me?.id ?? null,
+          })
+        : null,
+    [snapshot, filter, me?.id],
+  )
+
+  if (!snapshot || !summary || !result) {
     return (
       <Screen>
         <button
@@ -67,6 +128,18 @@ export function TripPage() {
   const memberName = (id: string) => members.find((m) => m.id === id)?.display_name ?? '?'
   const today = todayISO()
   const range = formatRange(trip.start_date, trip.end_date)
+  const activeCount = countActiveFilters(filter)
+  const filterActive = filter.categoryIds.length > 0 || activeCount > 0 || filter.q !== ''
+  const pills: Array<{ key: string; label: string; remove: TripExpenseFilter }> = []
+  if (filter.payer) pills.push({ key: 'payer', label: `${memberName(filter.payer)} paid`, remove: { ...filter, payer: null } })
+  if (filter.mine) pills.push({ key: 'mine', label: 'Only mine', remove: { ...filter, mine: false } })
+  if (filter.from || filter.to) {
+    pills.push({
+      key: 'dates',
+      label: `${filter.from ? formatDay(filter.from) : 'Start'} – ${filter.to ? formatDay(filter.to) : 'End'}`,
+      remove: { ...filter, from: null, to: null },
+    })
+  }
 
   const balance = summary.myBalance
   const balanceText = `${balance > 0 ? '+ ' : balance < 0 ? '– ' : ''}${money(Math.abs(balance))}`
@@ -146,6 +219,50 @@ export function TripPage() {
         </div>
       </section>
 
+      {expenses.length > 0 && (
+        <div className="flex flex-col gap-2.5 border-b border-gray-100 bg-surface py-3 pl-4">
+          <div className="flex items-center gap-2 pr-4">
+            <label className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-[12px] bg-gray-100 px-3 text-text-muted">
+              <Search size={16} aria-hidden="true" />
+              <input
+                type="search"
+                value={searchText}
+                onChange={(e) => onSearch(e.target.value)}
+                placeholder="Search expenses or places"
+                aria-label="Search expenses or places"
+                className="w-full min-w-0 bg-transparent text-[15px] text-text-primary outline-none"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => setSheetOpen(true)}
+              aria-label={`More filters${activeCount ? `, ${activeCount} active` : ''}`}
+              className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] bg-primary-tint text-primary"
+            >
+              <SlidersHorizontal size={20} />
+              {activeCount > 0 && (
+                <span className="absolute right-1 top-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-primary px-1 text-[11px] font-extrabold text-white">
+                  {activeCount}
+                </span>
+              )}
+            </button>
+          </div>
+          <CategoryChipRow
+            categories={usedCategoriesBySpend(snapshot)}
+            selectedIds={filter.categoryIds}
+            onToggle={(id) =>
+              updateFilter({
+                ...filter,
+                categoryIds: filter.categoryIds.includes(id)
+                  ? filter.categoryIds.filter((x) => x !== id)
+                  : [...filter.categoryIds, id],
+              })
+            }
+            onClear={() => updateFilter({ ...filter, categoryIds: [] })}
+          />
+        </div>
+      )}
+
       <div className="flex flex-col gap-2 px-4 pb-32 pt-3">
         {expenses.length === 0 ? (
           <div className="flex flex-col items-center gap-2.5 px-6 py-12 text-center">
@@ -156,35 +273,91 @@ export function TripPage() {
           </div>
         ) : (
           <>
+            {pills.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                {pills.map((p) => (
+                  <button
+                    key={p.key}
+                    type="button"
+                    aria-label={`Remove filter ${p.label}`}
+                    onClick={() => updateFilter(p.remove)}
+                    className="inline-flex h-8 items-center gap-1 rounded-full bg-gray-100 pl-3 pr-2 text-xs font-bold"
+                  >
+                    {p.label}
+                    <X size={14} aria-hidden="true" />
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => updateFilter(EMPTY_FILTER)}
+                  className="h-9 px-1 text-[13px] font-bold text-primary"
+                >
+                  Clear all
+                </button>
+              </div>
+            )}
             <div className="flex items-baseline justify-between px-0.5 pt-1">
               <span className="text-xs font-bold text-text-muted">
-                {expenses.length} {expenses.length === 1 ? 'expense' : 'expenses'}
-                {summary.pendingCount > 0 ? ` · +${summary.pendingCount} pending` : ''}
+                {result.items.length} {result.items.length === 1 ? 'expense' : 'expenses'}
+                {filterActive ? ' · filtered' : ''}
+                {result.pendingCount > 0 ? ` · +${result.pendingCount} pending` : ''}
               </span>
-              <b className="text-[13px] tabular-nums">{money(summary.spent)}</b>
+              <b className="text-[13px] tabular-nums">{money(result.totalDefault)}</b>
             </div>
-            {groupByDay(expenses).map(([date, list]) => (
-              <section key={date} aria-label={formatDay(date, true)}>
-                <h2 className="sticky top-0 z-[1] bg-background px-0.5 pb-1 pt-2.5 text-xs font-extrabold uppercase tracking-widest text-text-muted">
-                  {date === today ? `Today · ${formatDay(date, true)}` : formatDay(date, true)}
-                </h2>
-                <div className="rounded-[18px] bg-surface px-3.5 py-0.5">
-                  {list.map((e) => (
-                    <ExpenseRow
-                      key={e.id}
-                      expense={e}
-                      category={categories.find((c) => c.id === e.category_id)}
-                      payerName={memberName(e.paid_by)}
-                      defaultCurrency={currency}
-                      onOpen={(id) => navigate(`expenses/${id}`)}
-                    />
-                  ))}
-                </div>
-              </section>
-            ))}
+            {filterActive && result.items.length > 0 && (
+              <p className="px-0.5 text-xs text-text-muted">
+                Your share of these: <b className="tabular-nums text-text-primary">{money(result.myShareDefault)}</b>
+              </p>
+            )}
+            {result.items.length === 0 ? (
+              <div className="flex flex-col items-center gap-3 px-6 py-10 text-center">
+                <b className="text-base">Nothing matches these filters</b>
+                <button
+                  type="button"
+                  onClick={() => updateFilter(EMPTY_FILTER)}
+                  className="h-11 rounded-full border border-gray-300 bg-surface px-5 text-sm font-bold"
+                >
+                  Clear filters
+                </button>
+              </div>
+            ) : (
+              groupByDay(result.items).map(([date, list]) => (
+                <section key={date} aria-label={formatDay(date, true)}>
+                  <h2 className="sticky top-0 z-[1] bg-background px-0.5 pb-1 pt-2.5 text-xs font-extrabold uppercase tracking-widest text-text-muted">
+                    {date === today ? `Today · ${formatDay(date, true)}` : formatDay(date, true)}
+                  </h2>
+                  <div className="rounded-[18px] bg-surface px-3.5 py-0.5">
+                    {list.map((e) => (
+                      <ExpenseRow
+                        key={e.id}
+                        expense={e}
+                        category={categories.find((c) => c.id === e.category_id)}
+                        payerName={memberName(e.paid_by)}
+                        defaultCurrency={currency}
+                        onOpen={(id) => navigate(`expenses/${id}`)}
+                      />
+                    ))}
+                  </div>
+                </section>
+              ))
+            )}
           </>
         )}
       </div>
+
+      <FilterSheet
+        open={sheetOpen}
+        onClose={() => setSheetOpen(false)}
+        filter={filter}
+        onChange={(next) => updateFilter(next)}
+        onReset={() => updateFilter({ ...EMPTY_FILTER, q: filter.q })}
+        result={result}
+        categories={[...categories].sort((a, b) => a.sort_order - b.sort_order)}
+        members={members}
+        defaultCurrency={currency}
+        tripStart={trip.start_date}
+        tripEnd={trip.end_date}
+      />
 
       <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40">
         <div className="mx-auto flex max-w-[430px] justify-end px-5 pb-6">

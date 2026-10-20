@@ -1,9 +1,11 @@
 import { Route } from 'react-router-dom'
 import { TripsShell } from './components/TripsShell'
+import { CategoriesPage } from './pages/CategoriesPage'
 import { ComingSoonPage } from './pages/ComingSoonPage'
 import { ExpenseFormPage } from './pages/ExpenseFormPage'
 import { NewTripPage } from './pages/NewTripPage'
 import { TripPage } from './pages/TripPage'
+import { TripSettingsPage } from './pages/TripSettingsPage'
 import { TripsListPage } from './pages/TripsListPage'
 
 /**
@@ -20,6 +22,7 @@ export const tripsRoutes = (
     <Route path=":tripId/expenses/:id" element={<ExpenseFormPage />} />
     <Route path=":tripId/insights" element={<ComingSoonPage title="Insights" />} />
     <Route path=":tripId/balances" element={<ComingSoonPage title="Balances" />} />
-    <Route path=":tripId/settings" element={<ComingSoonPage title="Trip settings" />} />
+    <Route path=":tripId/settings" element={<TripSettingsPage />} />
+    <Route path=":tripId/categories" element={<CategoriesPage />} />
   </Route>
 )
