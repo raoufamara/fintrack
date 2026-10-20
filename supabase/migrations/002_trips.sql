@@ -1311,6 +1311,39 @@ grant execute on function public.create_trip_category(uuid, text, text, text)   
 grant execute on function public.preview_trip_invite(text)                                  to authenticated;
 grant execute on function public.request_join_from_share(text)                              to authenticated;
 
+-- Supabase also grants EXECUTE on new public functions to anon (and authenticated)
+-- through default privileges, which "revoke ... from public" does not undo.
+-- Only get_shared_trip is meant for signed-out visitors.
+revoke execute on function public.create_trip(text, text, date, date, numeric, text[])      from anon;
+revoke execute on function public.join_trip(text, uuid)                                     from anon;
+revoke execute on function public.upsert_trip_expense(jsonb, jsonb)                         from anon;
+revoke execute on function public.delete_trip_category(uuid, uuid)                          from anon;
+revoke execute on function public.reorder_trip_categories(uuid, uuid[])                     from anon;
+revoke execute on function public.set_trip_default_currency(uuid, text, jsonb)              from anon;
+revoke execute on function public.rotate_share_token(uuid)                                  from anon;
+revoke execute on function public.set_share_enabled(uuid, boolean)                          from anon;
+revoke execute on function public.delete_trip_expense(uuid)                                 from anon;
+revoke execute on function public.record_settlement(uuid, uuid, uuid, numeric, uuid)       from anon;
+revoke execute on function public.add_trip_member(uuid, text)                               from anon;
+revoke execute on function public.create_trip_category(uuid, text, text, text)              from anon;
+revoke execute on function public.preview_trip_invite(text)                                 from anon;
+revoke execute on function public.request_join_from_share(text)                             from anon;
+revoke execute on function public.is_trip_member(uuid)                                      from anon;
+
+-- Trigger functions are never called through the API.
+revoke execute on function public.trip_categories_guard() from public, anon, authenticated;
+revoke execute on function public.trip_members_guard()    from public, anon, authenticated;
+
+-- Pin search_path on the remaining helpers (Supabase security advisor).
+alter function public.immutable_unaccent(text)       set search_path = public;
+alter function public.currency_minor_units(text)     set search_path = public;
+alter function public.round_half_even(numeric, int)  set search_path = public;
+alter function public.trip_category_icons()          set search_path = public;
+
+-- Same fixes for the sign-up trigger from 001_initial_schema.sql.
+revoke execute on function public.handle_new_user() from public, anon, authenticated;
+alter function public.handle_new_user() set search_path = public;
+
 -- --------------------------------------------
 -- 6. Realtime: every table of the open trip. FULL replica identity so that DELETE
 -- events carry trip_id and pass the per-trip filters.
