@@ -171,7 +171,7 @@ describe('default currency setting', () => {
     await userEvent.click(within(confirm).getByRole('button', { name: 'Change currency' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(await screen.findByText('Default currency is now CAD')).toBeInTheDocument()
-    expect(screen.getByText('CAD')).toBeInTheDocument()
+    expect(screen.getAllByText('CAD').length).toBeGreaterThan(0)
   })
 
   it('blocks the change when rates are not available offline', async () => {

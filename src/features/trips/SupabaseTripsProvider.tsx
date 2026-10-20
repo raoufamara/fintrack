@@ -7,6 +7,7 @@ import { createHttpRateProvider } from './services/fxProviders'
 import { createFxService } from './services/fxService'
 import { createIdbFxStorage } from './services/fxStorage'
 import { createBrowserGeolocation, createPhotonProvider } from './services/placesService'
+import { createIdbQueueStorage } from './services/syncQueue'
 import { createSupabaseTripsRepository } from './services/supabaseTripsRepository'
 import { TripsProvider } from './store/TripsProvider'
 
@@ -18,6 +19,7 @@ import { TripsProvider } from './store/TripsProvider'
  */
 export function SupabaseTripsProvider() {
   const userId = useAuthStore((s) => s.user?.id)
+  const homeCurrency = useAuthStore((s) => s.profile?.currency ?? null)
   const repository = useMemo(
     () => (userId ? createSupabaseTripsRepository(supabase as unknown as SupabaseClient, userId) : null),
     [userId],
@@ -31,11 +33,12 @@ export function SupabaseTripsProvider() {
       }),
     [],
   )
+  const queueStorage = useMemo(() => createIdbQueueStorage(), [])
   const places = useMemo(() => createPhotonProvider(), [])
   const geolocation = useMemo(() => createBrowserGeolocation(), [])
   if (!repository) return null
   return (
-    <TripsProvider repository={repository} fx={fx} places={places} geolocation={geolocation}>
+    <TripsProvider repository={repository} fx={fx} places={places} geolocation={geolocation} queueStorage={queueStorage} homeCurrency={homeCurrency}>
       <Outlet />
     </TripsProvider>
   )

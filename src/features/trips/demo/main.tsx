@@ -5,6 +5,8 @@ import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
 import '@/index.css'
 import { createFxService } from '../services/fxService'
 import { createMemoryFxStorage } from '../services/fxStorage'
+import { fromMinor, toMinor } from '../lib/currency'
+import { splitAmount } from '../lib/money'
 import { createMemoryTripsRepository } from '../services/memoryTripsRepository'
 import { TripsProvider } from '../store/TripsProvider'
 import { tripsRoutes } from '../routes'
@@ -24,7 +26,12 @@ import { createFixtureProvider, seededCache } from './fixtureRates'
 const params = new URLSearchParams(window.location.search)
 const network = { online: params.get('offline') !== '1' }
 
-const repository = createMemoryTripsRepository({ currentUserId: 'demo-user-you', latencyMs: 120 })
+// Writes fail like a dropped connection while the demo is offline, so the retry queue can be tried.
+const repository = createMemoryTripsRepository({
+  currentUserId: 'demo-user-you',
+  latencyMs: 120,
+  isOnline: () => network.online,
+})
 const fx = createFxService({
   provider: createFixtureProvider(),
   storage: createMemoryFxStorage(params.get('norates') === '1' ? {} : seededCache(2)),
@@ -37,6 +44,20 @@ document.documentElement.style.setProperty('--trips-top-inset', '28px')
 const places = createFixturePlacesProvider(() => network.online)
 const geolocation = createFixtureGeolocation(params.get('loc'))
 
+/** Pretends Sara added an expense on her own phone. */
+function remoteAdd() {
+  repository.simulateRemote('trip-lisbon', (snap) => {
+    const id = `remote-${Date.now()}`
+    const at = new Date().toISOString()
+    const base = snap.expenses[0]
+    if (!base) return
+    snap.expenses.push({ ...base, id, title: 'Added from Sara’s phone', amount: 18, amount_default: 18, category_id: 'c-food', paid_by: 'm2', date: at.slice(0, 10), created_at: at, updated_at: at, client_id: null })
+    for (const [member_id, minor] of splitAmount(toMinor('18', 'EUR'), 'equal', snap.members.map((m) => m.id))) {
+      snap.shares.push({ expense_id: id, member_id, weight: 1, amount: fromMinor(minor, 'EUR') })
+    }
+  })
+}
+
 function DemoBar() {
   const [online, setOnline] = useState(network.online)
   const toggle = () => {
@@ -47,6 +68,9 @@ function DemoBar() {
   return (
     <div className="fixed inset-x-0 top-0 z-[80] flex h-7 items-center justify-between bg-primary-dark px-3 text-[11px] font-bold text-white">
       <span>Trips demo · sample data</span>
+      <button type="button" onClick={remoteAdd} className="rounded-full bg-white/15 px-2.5 py-0.5 text-[10px] font-extrabold">
+        Remote add
+      </button>
       <button
         type="button"
         onClick={toggle}
@@ -62,7 +86,7 @@ function DemoBar() {
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <HashRouter>
-      <TripsProvider repository={repository} fx={fx} places={places} geolocation={geolocation}>
+      <TripsProvider repository={repository} fx={fx} places={places} geolocation={geolocation} homeCurrency="CAD">
         <Routes>
           {tripsRoutes}
           <Route path="*" element={<Navigate to="/trips" replace />} />

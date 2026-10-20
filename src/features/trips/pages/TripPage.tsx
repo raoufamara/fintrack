@@ -1,3 +1,5 @@
+import { useDisplayCurrency } from '../hooks/useDisplayCurrency'
+import { useTripWatch } from '../hooks/useTripWatch'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, PieChart, Plus, Scale, Search, Settings, SlidersHorizontal, X } from 'lucide-react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
@@ -33,6 +35,9 @@ export function TripPage() {
   const loadTrip = useTripsStore((s) => s.loadTrip)
 
   const syncRates = useTripsStore((s) => s.syncRates)
+  const unsynced = useTripsStore((s) => s.unsynced)
+  const queued = useTripsStore((s) => s.queue.filter((q) => q.tripId === tripId).length)
+  useTripWatch(tripId)
   useEffect(() => {
     // Load the trip, then refresh stale rates and convert pending expenses in the background.
     void loadTrip(tripId).then(() => syncRates(tripId))
@@ -44,6 +49,7 @@ export function TripPage() {
     [snapshot, me?.id],
   )
 
+  const display = useDisplayCurrency(snapshot)
   const [params, setParams] = useSearchParams()
   const categoryIdsKey = snapshot?.categories.map((c) => c.id).join(',') ?? ''
   const memberIdsKey = snapshot?.members.map((m) => m.id).join(',') ?? ''
@@ -151,7 +157,8 @@ export function TripPage() {
   }
 
   const balance = summary.myBalance
-  const balanceText = `${balance > 0 ? '+ ' : balance < 0 ? '– ' : ''}${money(Math.abs(balance))}`
+  const balanceShown = display.format(balance, { signed: true })
+  const spentShown = display.format(summary.spent)
   const balanceColor = balance > 0 ? '#8BE07A' : balance < 0 ? 'var(--color-owe-light)' : '#FFFFFF'
   const t = summary.myTransfer
   const balanceSub = t
@@ -200,7 +207,8 @@ export function TripPage() {
         <div className="grid grid-cols-2 gap-2.5">
           <div className="flex flex-col gap-1 rounded-[14px] bg-white/10 p-3">
             <span className="text-xs font-semibold text-[#CFC3F5]">Group spent</span>
-            <span className="text-xl font-extrabold tabular-nums">{money(summary.spent)}</span>
+            <span className="text-xl font-extrabold tabular-nums">{spentShown.main}</span>
+            {spentShown.sub && <span className="text-[11px] tabular-nums text-[#CFC3F5]">{spentShown.sub}</span>}
             {budget !== null ? (
               <>
                 <span className="block h-1.5 overflow-hidden rounded bg-white/15">
@@ -226,11 +234,17 @@ export function TripPage() {
           >
             <span className="text-xs font-semibold text-[#CFC3F5]">Your balance</span>
             <span className="text-xl font-extrabold tabular-nums" style={{ color: balanceColor }}>
-              {balanceText}
+              {balanceShown.main}
             </span>
+            {balanceShown.sub && <span className="text-[11px] tabular-nums text-[#CFC3F5]">{balanceShown.sub}</span>}
             <span className="text-[11px] text-[#CFC3F5]">{balanceSub} · Settle up ›</span>
           </button>
         </div>
+        {queued > 0 && (
+          <p role="status" className="rounded-[10px] bg-white/10 px-3 py-2 text-xs font-bold text-owe-light">
+            {queued} {queued === 1 ? 'change' : 'changes'} waiting to sync
+          </p>
+        )}
       </section>
 
       {expenses.length > 0 && (
@@ -357,6 +371,7 @@ export function TripPage() {
                   <div className="rounded-[18px] bg-surface px-3.5 py-0.5">
                     {list.map((e) => (
                       <ExpenseRow
+                        unsynced={!!unsynced[e.id]}
                         key={e.id}
                         expense={e}
                         category={categories.find((c) => c.id === e.category_id)}
