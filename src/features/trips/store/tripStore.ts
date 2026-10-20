@@ -119,6 +119,12 @@ export interface TripsState {
   previewInvite: (code: string) => Promise<{ ok: true; preview: InvitePreview } | { ok: false; reason: 'invalid' | 'error'; error: string }>
   joinTrip: (code: string, tripId: string, memberId: string | null) => Promise<{ ok: true } | { ok: false; reason: 'claimed' | 'invalid' | 'error'; error: string }>
   /** The signed-in member's personal "show in" currency; null follows the home currency. */
+  /** Turns the public view-only link on or off. Online only; rolls back when it fails. */
+  setShareEnabled: (tripId: string, enabled: boolean) => Promise<CategoryResult>
+  /** Replaces the view-only token; returns the new token. Online only. */
+  rotateShareToken: (tripId: string) => Promise<CategoryResult & { token?: string }>
+  /** Invite code behind a view-only link, for a freshly logged-in guest. */
+  requestJoinFromShare: (shareToken: string) => Promise<{ ok: true; code: string } | { ok: false; reason: 'dead' | 'error'; error: string }>
   setDisplayCurrency: (tripId: string, memberId: string, currency: string | null) => Promise<CategoryResult>
   setCurrentPlace: (place: PlaceResult | null) => void
   saveDraft: (key: string, draft: ExpenseDraft) => void
@@ -742,6 +748,53 @@ export function createTripStore(
         } catch (err) {
           const c = (err as { code?: string }).code
           return { ok: false, reason: c === DUPLICATE_CODE ? 'claimed' : c === 'P0002' ? 'invalid' : 'error', error: messageOf(err) }
+        }
+      },
+
+      async setShareEnabled(tripId, enabled) {
+        const snap = get().trips[tripId]
+        if (!snap) return invalid('Trip not loaded.')
+        const previous = snap.trip.share_enabled
+        const setIt = (value: boolean) =>
+          patchTrip(tripId, (x) => ({ ...x, trip: { ...x.trip, share_enabled: value } }))
+        setIt(enabled)
+        try {
+          await repository.setShareEnabled(tripId, enabled)
+          return { ok: true }
+        } catch (err) {
+          setIt(previous)
+          if (isNetworkError(err)) {
+            const message = 'Changing the link needs a connection. Try again when you are online.'
+            get().showToast('error', message)
+            return { ok: false, error: message }
+          }
+          return failure(err, 'change sharing')
+        }
+      },
+
+      async rotateShareToken(tripId) {
+        const snap = get().trips[tripId]
+        if (!snap) return invalid('Trip not loaded.')
+        try {
+          const token = await repository.rotateShareToken(tripId)
+          patchTrip(tripId, (x) => ({ ...x, trip: { ...x.trip, share_token: token } }))
+          return { ok: true, token }
+        } catch (err) {
+          if (isNetworkError(err)) {
+            const message = 'Resetting the link needs a connection. Try again when you are online.'
+            get().showToast('error', message)
+            return { ok: false, error: message }
+          }
+          return failure(err, 'reset the link')
+        }
+      },
+
+      async requestJoinFromShare(shareToken) {
+        try {
+          return { ok: true, code: await repository.requestJoinFromShare(shareToken) }
+        } catch (err) {
+          const dead = (err as { code?: string }).code === 'P0002'
+          return { ok: false, reason: dead ? 'dead' : 'error', error: messageOf(err) }
         }
       },
 

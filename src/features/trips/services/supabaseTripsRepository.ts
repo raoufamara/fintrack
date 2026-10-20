@@ -142,6 +142,14 @@ export function createSupabaseTripsRepository(
       await rpc('delete_trip_expense', { p_expense_id: expenseId })
     },
 
+    async setShareEnabled(tripId, enabled) {
+      await rpc('set_share_enabled', { p_trip_id: tripId, p_enabled: enabled })
+    },
+
+    rotateShareToken: (tripId) => rpc<string>('rotate_share_token', { p_trip_id: tripId }),
+
+    requestJoinFromShare: (shareToken) => rpc<string>('request_join_from_share', { p_token: shareToken }),
+
     async recordSettlement(settlement) {
       await rpc('record_settlement', {
         p_trip_id: settlement.trip_id,

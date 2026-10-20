@@ -20,6 +20,8 @@ interface TripsProviderProps {
   queueStorage?: QueueStorage
   /** The user's home currency, the default for "show in my currency". */
   homeCurrency?: string | null
+  /** Public view-only mode: no queue, no online handlers. */
+  readOnly?: boolean
   children: ReactNode
 }
 
@@ -36,6 +38,7 @@ export function TripsProvider({
   geolocation,
   queueStorage,
   homeCurrency = null,
+  readOnly = false,
   children,
 }: TripsProviderProps) {
   const value = useMemo<TripsContextValue>(() => {
@@ -51,6 +54,7 @@ export function TripsProvider({
   }, [repository, fx, places, geolocation, queueStorage, homeCurrency])
 
   useEffect(() => {
+    if (readOnly) return
     const { store } = value
     // App start: pick up writes left over from the last session.
     void store.getState().loadQueue().then(() => store.getState().flushQueue(true))
@@ -68,7 +72,7 @@ export function TripsProvider({
       window.removeEventListener('online', onOnline)
       clearInterval(timer)
     }
-  }, [value])
+  }, [value, readOnly])
 
   return <TripsContext.Provider value={value}>{children}</TripsContext.Provider>
 }

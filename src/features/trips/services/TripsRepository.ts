@@ -108,6 +108,12 @@ export interface TripsRepository {
   updateMyDisplayCurrency(memberId: string, currency: string | null): Promise<void>
   /** Calls `onChange` when the trip changes elsewhere (another device). Returns an unsubscribe function. */
   subscribe(tripId: string, onChange: () => void): () => void
+  /** Turns the public view-only link on or off. */
+  setShareEnabled(tripId: string, enabled: boolean): Promise<void>
+  /** Replaces the view-only token so old links stop working. Returns the new token. */
+  rotateShareToken(tripId: string): Promise<string>
+  /** For a logged-in user: the invite code behind a valid, enabled view-only link. Rejects with 'P0002' otherwise. */
+  requestJoinFromShare(shareToken: string): Promise<string>
   /** Returns the new category id. Rejects with code '23505' on a duplicate name. */
   createCategory(tripId: string, input: CategoryInput): Promise<string>
   updateCategory(categoryId: string, patch: CategoryPatch): Promise<void>

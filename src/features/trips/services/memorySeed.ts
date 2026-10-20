@@ -51,7 +51,7 @@ export function buildLisbonPortoSeed(userId: string, today: string): TripSnapsho
     end_date: addDays(start, 7),
     budget_amount: 1200,
     invite_code: 'lisb0a1',
-    share_token: 'seed-share-token',
+    share_token: 'demo-share-token',
     share_enabled: true,
     created_by: userId,
     archived_at: null,

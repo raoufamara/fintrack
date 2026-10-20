@@ -110,6 +110,25 @@ export function createMemoryTripsRepository(options: MemoryRepositoryOptions): M
       }
     },
 
+    async setShareEnabled(tripId, enabled) {
+      await write()
+      requireTrip(tripId).trip.share_enabled = enabled
+    },
+
+    async rotateShareToken(tripId) {
+      await write()
+      const trip = requireTrip(tripId).trip
+      trip.share_token = newId().replace(/-/g, '')
+      return trip.share_token
+    },
+
+    async requestJoinFromShare(shareToken) {
+      await wait()
+      const snap = [...db.values()].find((s) => s.trip.share_token === shareToken && s.trip.share_enabled)
+      if (!snap) throw new RepositoryError('This link no longer works', 'P0002')
+      return snap.trip.invite_code
+    },
+
     async recordSettlement(settlement) {
       await write()
       const snap = requireTrip(settlement.trip_id)
@@ -433,7 +452,7 @@ export function createMemoryTripsRepository(options: MemoryRepositoryOptions): M
   const target = repo as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>
   for (const name of [
     'createTrip', 'saveExpense', 'deleteExpense', 'setDefaultCurrency', 'createCategory', 'updateCategory',
-    'deleteCategory', 'reorderCategories', 'recordSettlement', 'addMember', 'joinTrip', 'updateMyDisplayCurrency',
+    'deleteCategory', 'reorderCategories', 'setShareEnabled', 'rotateShareToken', 'recordSettlement', 'addMember', 'joinTrip', 'updateMyDisplayCurrency',
   ]) {
     const original = target[name]
     if (!original) continue
