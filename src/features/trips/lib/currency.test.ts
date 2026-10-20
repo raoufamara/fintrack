@@ -73,3 +73,20 @@ describe('formatMoney', () => {
     expect(formatMoney(12345, 'KWD', 'en-US')).toContain('12.345')
   })
 })
+
+describe('SQL sync', () => {
+  it('keeps currency_minor_units() in 002_trips.sql identical to currencies.json', async () => {
+    const { readFileSync } = await import('node:fs')
+    const sql = readFileSync('supabase/migrations/002_trips.sql', 'utf8')
+    const fn = /function public\.currency_minor_units[\s\S]*?\$\$;/.exec(sql)?.[0] ?? ''
+    const list = (n: number) => {
+      const body = new RegExp(`any \\(array\\[([^\\]]*)\\]\\) then ${n}`).exec(fn)?.[1] ?? ''
+      return [...body.matchAll(/'([A-Z]{3})'/g)].map((m) => m[1]).sort()
+    }
+    const fromJson = (n: number) => CURRENCIES.filter((c) => c.minorUnits === n).map((c) => c.code).sort()
+    expect(list(0)).toEqual(fromJson(0))
+    expect(list(3)).toEqual(fromJson(3))
+    expect(fromJson(0).length).toBeGreaterThan(10)
+    expect(fromJson(3)).toContain('KWD')
+  })
+})

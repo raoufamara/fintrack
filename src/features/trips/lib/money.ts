@@ -162,10 +162,8 @@ export function toDisplay(
  * stores), or null while the rate is pending. Uses banker's rounding to the
  * default currency's minor units, exactly like `toDefault`.
  *
- * Note: the SQL function computes `round(amount * fx_rate, 2)` (half away from
- * zero, always 2 decimals). It differs only for exact halves and for 0/3-decimal
- * default currencies. Balances and totals never read `amount_default`; they
- * re-derive from amount and rate with `toDefault`.
+ * The SQL `upsert_trip_expense` computes the same value with `round_half_even`
+ * and `currency_minor_units` (see the sync test in currency.test.ts).
  */
 export function amountDefault(
   amount: number,

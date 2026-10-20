@@ -33,6 +33,40 @@ volatile
 set search_path = public, extensions
 as $$ select translate(encode(gen_random_bytes(18), 'base64'), '+/=', '-_') $$;
 
+-- Decimal places of a currency (ISO 4217 minor units). Keep the 0- and 3-decimal
+-- lists in sync with currencies.json; a test compares them. Everything else is 2.
+create or replace function public.currency_minor_units(p_code text)
+returns int
+language sql
+immutable
+parallel safe
+as $$
+  select case
+    when upper(p_code) = any (array['BIF','CLP','DJF','GNF','ISK','JPY','KMF','KRW','PYG','RWF','UGX','VND','VUV','XAF','XOF','XPF']) then 0
+    when upper(p_code) = any (array['BHD','IQD','JOD','KWD','LYD','OMR','TND']) then 3
+    else 2
+  end
+$$;
+
+-- Banker's rounding (half to even) at `p_places` decimals, exact on numeric.
+-- Matches toDefault() in the client, so balances and amount_default agree.
+create or replace function public.round_half_even(p_value numeric, p_places int)
+returns numeric
+language sql
+immutable
+parallel safe
+as $$
+  with s as (select p_value * power(10::numeric, p_places) as scaled)
+  select (
+    case
+      when abs(scaled - trunc(scaled)) = 0.5
+        then trunc(scaled) + case when mod(trunc(scaled), 2) = 0 then 0 else sign(scaled) end
+      else round(scaled)
+    end
+  ) / power(10::numeric, p_places)
+  from s
+$$;
+
 -- --------------------------------------------
 -- 1. Tables
 -- --------------------------------------------
@@ -91,7 +125,7 @@ create table if not exists public.trip_expenses (
   fx_rate numeric(20,10),                         -- 1 unit of currency -> default_currency; null = pending
   fx_source text check (fx_source in ('cache','api','manual','same')),
   fx_date date,                                   -- date of the rate table used
-  amount_default numeric(14,2),                   -- round(amount * fx_rate, 2); null while pending
+  amount_default numeric(14,3),                   -- amount * fx_rate, half-even at the default currency's decimals; null while pending
   paid_by uuid not null references public.trip_members(id),
   split_mode text not null default 'equal' check (split_mode in ('equal','exact','shares')),
   date date not null default current_date,
@@ -464,7 +498,8 @@ $$;
 -- p_expense: jsonb with trip_id, category_id, title, amount, currency, paid_by,
 --   and optionally id, client_id, fx_rate, fx_source, fx_date, split_mode, date, note, place_*.
 -- p_shares: jsonb array of {member_id, weight?, amount} in the expense's currency.
--- Idempotent on client_id (and on id). amount_default is computed here.
+-- Idempotent on client_id (and on id). amount_default is computed here: banker's
+-- rounding to the default currency's decimals, exactly like toDefault() on the client.
 create or replace function public.upsert_trip_expense(
   p_expense jsonb,
   p_shares jsonb
@@ -580,7 +615,7 @@ begin
     v_amount_default := null;
     v_fx_source := null;
   else
-    v_amount_default := round(v_amount * v_fx_rate, 2);
+    v_amount_default := public.round_half_even(v_amount * v_fx_rate, public.currency_minor_units(v_default_currency));
   end if;
 
   -- Shares: valid members, no duplicates, non-negative, sum equals the amount.
@@ -840,7 +875,7 @@ begin
   loop
     if v_row.currency = v_new then
       update public.trip_expenses
-        set fx_rate = 1, fx_source = 'same', amount_default = round(amount, 2), updated_at = now()
+        set fx_rate = 1, fx_source = 'same', amount_default = public.round_half_even(amount, public.currency_minor_units(v_new)), updated_at = now()
         where id = v_row.id;
     else
       v_rate := coalesce(
@@ -849,7 +884,7 @@ begin
       );
       if v_rate is not null and v_rate > 0 then
         update public.trip_expenses
-          set fx_rate = v_rate, fx_source = 'api', amount_default = round(v_row.amount * v_rate, 2), updated_at = now()
+          set fx_rate = v_rate, fx_source = 'api', amount_default = public.round_half_even(v_row.amount * v_rate, public.currency_minor_units(v_new)), updated_at = now()
           where id = v_row.id;
       else
         update public.trip_expenses
