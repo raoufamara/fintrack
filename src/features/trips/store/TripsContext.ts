@@ -1,10 +1,12 @@
 import { createContext, useContext } from 'react'
 import { useStore } from 'zustand'
+import type { FxService } from '../services/fxService'
 import type { TripsState, TripsStore } from './tripStore'
 
 export interface TripsContextValue {
   store: TripsStore
   currentUserId: string
+  fx: FxService
 }
 
 export const TripsContext = createContext<TripsContextValue | null>(null)
@@ -25,4 +27,8 @@ export function useTripsStoreApi(): TripsStore {
 
 export function useCurrentUserId(): string {
   return useTripsContext().currentUserId
+}
+
+export function useFx(): FxService {
+  return useTripsContext().fx
 }

@@ -1,4 +1,4 @@
-import { minorUnits } from './currency'
+import { fromMinor, minorUnits, toMinor } from './currency'
 
 export type SplitMode = 'equal' | 'exact' | 'shares'
 
@@ -155,4 +155,25 @@ export function toDisplay(
     minor: convertMinor(amountMinorDefault, defaultCurrency, displayCurrency, rate),
     approx: true,
   }
+}
+
+/**
+ * The expense total in the default currency as a decimal (what `amount_default`
+ * stores), or null while the rate is pending. Uses banker's rounding to the
+ * default currency's minor units, exactly like `toDefault`.
+ *
+ * Note: the SQL function computes `round(amount * fx_rate, 2)` (half away from
+ * zero, always 2 decimals). It differs only for exact halves and for 0/3-decimal
+ * default currencies. Balances and totals never read `amount_default`; they
+ * re-derive from amount and rate with `toDefault`.
+ */
+export function amountDefault(
+  amount: number,
+  currency: string,
+  fxRate: number | null,
+  defaultCurrency: string,
+): number | null {
+  if (currency === defaultCurrency) return fromMinor(toMinor(amount, currency), currency)
+  if (fxRate === null) return null
+  return fromMinor(toDefault(toMinor(amount, currency), currency, fxRate, defaultCurrency), defaultCurrency)
 }

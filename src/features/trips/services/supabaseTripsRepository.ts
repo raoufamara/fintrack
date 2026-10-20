@@ -131,6 +131,10 @@ export function createSupabaseTripsRepository(
       await rpc('delete_trip_expense', { p_expense_id: expenseId })
     },
 
+    async setDefaultCurrency(tripId, currency, rates) {
+      await rpc('set_trip_default_currency', { p_trip_id: tripId, p_currency: currency, p_rates: rates })
+    },
+
     createCategory: (tripId, input) =>
       rpc<string>('create_trip_category', {
         p_trip_id: tripId,

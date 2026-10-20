@@ -432,7 +432,7 @@ create index idx_trip_members_user on public.trip_members(user_id);
   - **Rate limiting:** the token has 144 bits of entropy, which makes guessing impossible. Supabase's API rate limits apply on top. Never log the token.
   - Guest pages use only this RPC. They make no direct table reads, and RLS stays closed to `anon`.
 - `rotate_share_token(trip_id)` and `set_share_enabled(trip_id, bool)`: members only.
-- `set_trip_default_currency(trip_id, currency, rates jsonb)` re-converts every expense with the rates the client supplies (`{ "<CCY>": { "<YYYY-MM-DD>": rate, "latest": rate } }`, to the new default) and updates `default_currency` atomically. Expenses without a rate become pending; settlements and the budget are converted too, which needs the old default's `latest` rate.
+- `set_trip_default_currency(trip_id, currency, rates jsonb)` re-converts every expense with the rates the client supplies (`{ "<CCY>": { "<expense date YYYY-MM-DD>": rate, "latest": rate } }`, to the new default) and updates `default_currency` atomically. Expenses without a rate become pending; settlements and the budget are converted too, which needs the old default's `latest` rate.
 
 Assertions for this model live in `supabase/tests/002_trips_hardening.sql` (run on a scratch Postgres).
 

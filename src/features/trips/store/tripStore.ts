@@ -1,16 +1,19 @@
 import { createStore, type StoreApi } from 'zustand/vanilla'
 import { fromMinor } from '../lib/currency'
+import { amountDefault } from '../lib/money'
+import { createNullFxService, type FxService } from '../services/fxService'
 import { isDuplicateCategoryName, CATEGORY_NAME_MAX } from '../lib/categories'
 import {
   DUPLICATE_CODE,
   type CategoryInput,
   type CategoryPatch,
   type NewTripInput,
+  type RatesPayload,
   type TripSnapshot,
   type TripsRepository,
 } from '../services/TripsRepository'
 import { newId } from '../services/ids'
-import type { SplitMode, TripCategory, TripExpense, TripExpenseShare } from '../types'
+import type { FxSource, SplitMode, TripCategory, TripExpense, TripExpenseShare } from '../types'
 
 export type LoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -32,8 +35,27 @@ export interface SaveExpenseInput {
   date: string
   note?: string | null
   splitMode: SplitMode
-  /** Per-member shares in minor units; must sum to `amountMinor`. */
+  /** Per-member shares in minor units of `currency`; must sum to `amountMinor`. */
   shares: ReadonlyMap<string, number>
+  /** Expense currency. Defaults to the trip default currency. */
+  currency?: string
+  /** 1 unit of `currency` in the trip default currency; null leaves the expense pending. */
+  fxRate?: number | null
+  fxSource?: FxSource | null
+  fxDate?: string | null
+}
+
+/** Unsaved expense form, kept while the user visits another screen (e.g. Categories). */
+export interface ExpenseDraft {
+  amount: string
+  title: string
+  categoryId: string | undefined
+  paidBy: string
+  splitIds: string[]
+  date: string
+  currency: string
+  /** Typed rate text when the user overrode the cached rate. */
+  manualRate: string | null
 }
 
 export interface CategoryResult {
@@ -53,6 +75,7 @@ export interface TripsState {
   tripStatus: Record<string, LoadStatus>
   tripError: Record<string, string>
   toast: Toast | null
+  drafts: Record<string, ExpenseDraft>
 
   loadTrips: () => Promise<void>
   loadTrip: (tripId: string) => Promise<void>
@@ -64,6 +87,13 @@ export interface TripsState {
   /** `moveTo` is required when the category has expenses. */
   deleteCategory: (tripId: string, categoryId: string, moveTo: string | null) => Promise<CategoryResult>
   reorderCategories: (tripId: string, orderedIds: string[]) => Promise<CategoryResult>
+  saveDraft: (key: string, draft: ExpenseDraft) => void
+  clearDraft: (key: string) => void
+  /** Converts pending expenses (no rate yet) with cached or fetched rates; never touches manual rates. Returns how many. */
+  reconcilePending: (tripId?: string) => Promise<number>
+  /** Refreshes stale rate tables for the loaded trips, then reconciles pending expenses. */
+  syncRates: (tripId?: string) => Promise<void>
+  setDefaultCurrency: (tripId: string, currency: string, rates: RatesPayload) => Promise<CategoryResult>
   showToast: (kind: Toast['kind'], message: string) => void
   dismissToast: () => void
 }
@@ -73,8 +103,9 @@ export type TripsStore = StoreApi<TripsState>
 const messageOf = (err: unknown) => (err instanceof Error ? err.message : 'Something went wrong')
 
 /** Creates the Trips store around an injected repository. */
-export function createTripStore(repository: TripsRepository): TripsStore {
+export function createTripStore(repository: TripsRepository, fx: FxService = createNullFxService()): TripsStore {
   let toastSeq = 0
+  let reconciling = false
 
   return createStore<TripsState>()((set, get) => {
     /** Applies `fn` to one trip snapshot, if loaded. */
@@ -118,6 +149,7 @@ export function createTripStore(repository: TripsRepository): TripsStore {
       tripStatus: {},
       tripError: {},
       toast: null,
+      drafts: {},
 
       async loadTrips() {
         set({ listStatus: 'loading', listError: null })
@@ -181,7 +213,10 @@ export function createTripStore(repository: TripsRepository): TripsStore {
           get().showToast('error', 'Trip not loaded.')
           return false
         }
-        const currency = snap.trip.default_currency
+        const defaultCurrency = snap.trip.default_currency
+        const currency = input.currency ?? defaultCurrency
+        const same = currency === defaultCurrency
+        const fxRate = same ? 1 : (input.fxRate ?? null)
         let total = 0
         for (const minor of input.shares.values()) total += minor
         if (input.amountMinor <= 0 || total !== input.amountMinor) {
@@ -208,10 +243,10 @@ export function createTripStore(repository: TripsRepository): TripsStore {
           title: input.title.trim(),
           amount,
           currency,
-          fx_rate: 1,
-          fx_source: 'same',
-          fx_date: null,
-          amount_default: amount,
+          fx_rate: fxRate,
+          fx_source: fxRate === null ? null : same ? 'same' : (input.fxSource ?? 'cache'),
+          fx_date: same ? null : (input.fxDate ?? null),
+          amount_default: amountDefault(amount, currency, fxRate, defaultCurrency),
           paid_by: input.paidBy,
           split_mode: input.splitMode,
           date: input.date,
@@ -372,6 +407,83 @@ export function createTripStore(repository: TripsRepository): TripsStore {
         } catch (err) {
           putCategories(tripId, previous)
           return failure(err, 'reorder the categories')
+        }
+      },
+
+      saveDraft(key, draft) {
+        set((state) => ({ drafts: { ...state.drafts, [key]: draft } }))
+      },
+
+      clearDraft(key) {
+        set((state) => {
+          if (!(key in state.drafts)) return state
+          const drafts = { ...state.drafts }
+          delete drafts[key]
+          return { drafts }
+        })
+      },
+
+      async reconcilePending(tripId) {
+        if (reconciling) return 0
+        reconciling = true
+        let converted = 0
+        try {
+          for (const id of tripId ? [tripId] : Object.keys(get().trips)) {
+            const snap = get().trips[id]
+            if (!snap) continue
+            const defaultCurrency = snap.trip.default_currency
+            const pending = snap.expenses.filter(
+              (e) => e.fx_rate === null && e.currency !== defaultCurrency && e.fx_source !== 'manual',
+            )
+            for (const e of pending) {
+              const rate = await fx.getRate(e.currency, defaultCurrency, e.date)
+              if (!rate || rate.source === 'same') continue
+              // Re-read: the user may have typed a manual rate while we were waiting.
+              const current = get().trips[id]?.expenses.find((x) => x.id === e.id)
+              if (!current || current.fx_rate !== null || current.fx_source === 'manual') continue
+              const next: TripExpense = {
+                ...current,
+                fx_rate: rate.rate,
+                fx_source: 'api',
+                fx_date: rate.tableDate,
+                amount_default: amountDefault(current.amount, current.currency, rate.rate, defaultCurrency),
+                updated_at: new Date().toISOString(),
+              }
+              const shares = get().trips[id]?.shares.filter((s) => s.expense_id === e.id) ?? []
+              putExpense(id, next, shares)
+              try {
+                await repository.saveExpense(next, shares)
+                converted += 1
+              } catch {
+                putExpense(id, current, shares)
+              }
+            }
+          }
+        } finally {
+          reconciling = false
+        }
+        if (converted > 0) {
+          get().showToast('info', `${converted} pending ${converted === 1 ? 'expense' : 'expenses'} converted`)
+        }
+        return converted
+      },
+
+      async syncRates(tripId) {
+        const ids = tripId ? [tripId] : Object.keys(get().trips)
+        const bases = new Set(ids.flatMap((id) => (get().trips[id] ? [get().trips[id]!.trip.default_currency] : [])))
+        await Promise.all([...bases].map((b) => fx.warm(b)))
+        await get().reconcilePending(tripId)
+      },
+
+      async setDefaultCurrency(tripId, currency, rates) {
+        try {
+          await repository.setDefaultCurrency(tripId, currency, rates)
+          const fresh = await repository.getTrip(tripId)
+          if (!fresh) throw new Error('Trip not found')
+          set((state) => ({ trips: { ...state.trips, [tripId]: fresh } }))
+          return { ok: true }
+        } catch (err) {
+          return failure(err, 'change the default currency')
         }
       },
 

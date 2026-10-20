@@ -1,5 +1,6 @@
 import { DEFAULT_CATEGORIES, isDuplicateCategoryName } from '../lib/categories'
 import { todayISO } from '../lib/dates'
+import { amountDefault } from '../lib/money'
 import type { Trip, TripCategory, TripExpense, TripExpenseShare, TripMember } from '../types'
 import { newId } from './ids'
 import { buildLisbonPortoSeed } from './memorySeed'
@@ -110,7 +111,16 @@ export function createMemoryTripsRepository(options: MemoryRepositoryOptions): T
       if (sum !== Math.round(expense.amount * 1000)) {
         throw new Error('Shares must sum to the amount')
       }
-      snap.expenses = snap.expenses.filter((e) => e.id !== expense.id).concat(clone(expense))
+      // Mirror the server: same-currency expenses get rate 1, and amount_default is computed here.
+      const same = expense.currency === snap.trip.default_currency
+      const rate = same ? 1 : expense.fx_rate
+      const stored: TripExpense = {
+        ...clone(expense),
+        fx_rate: rate,
+        fx_source: rate === null ? null : same ? 'same' : expense.fx_source,
+        amount_default: amountDefault(expense.amount, expense.currency, rate, snap.trip.default_currency),
+      }
+      snap.expenses = snap.expenses.filter((e) => e.id !== expense.id).concat(stored)
       snap.shares = snap.shares.filter((s) => s.expense_id !== expense.id).concat(clone(shares))
     },
 
@@ -124,6 +134,45 @@ export function createMemoryTripsRepository(options: MemoryRepositoryOptions): T
         }
       }
       throw new Error('Expense not found')
+    },
+
+    async setDefaultCurrency(tripId, currency, rates) {
+      await wait()
+      const snap = db.get(tripId)
+      if (!snap) throw new Error('Trip not found')
+      const old = snap.trip.default_currency
+      if (old === currency) return
+      const pick = (ccy: string, date: string): number | null => {
+        const r = rates[ccy]?.[date] ?? rates[ccy]?.['latest']
+        return r !== undefined && r > 0 ? r : null
+      }
+      // Validate everything first so a failure changes nothing (the server is transactional).
+      const settlementRates = snap.settlements.map((s) => {
+        if (s.currency === currency) return 1
+        const r = pick(s.currency, s.created_at.slice(0, 10))
+        if (r === null) throw new Error(`Missing rate for settlement currency ${s.currency}`)
+        return r
+      })
+      let budget = snap.trip.budget_amount
+      if (budget !== null) {
+        const r = rates[old]?.['latest']
+        if (r === undefined || r <= 0) throw new Error(`Missing latest rate for ${old} (needed to convert the budget)`)
+        budget = Math.round(budget * r * 100) / 100
+      }
+      for (const e of snap.expenses) {
+        if (e.currency === currency) {
+          e.fx_rate = 1
+          e.fx_source = 'same'
+        } else {
+          const r = pick(e.currency, e.date)
+          e.fx_rate = r
+          e.fx_source = r === null ? null : 'api'
+        }
+        e.amount_default = amountDefault(e.amount, e.currency, e.fx_rate, currency)
+      }
+      snap.settlements.forEach((s, i) => (s.fx_rate = settlementRates[i] ?? 1))
+      snap.trip.budget_amount = budget
+      snap.trip.default_currency = currency
     },
 
     async createCategory(tripId, input) {

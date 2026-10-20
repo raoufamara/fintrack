@@ -43,6 +43,9 @@ export class RepositoryError extends Error {
 
 export const DUPLICATE_CODE = '23505'
 
+/** `{ "<CCY>": { "<expense date>": rate, "latest": rate } }`, rates to the new default currency. */
+export type RatesPayload = Record<string, Record<string, number>>
+
 export interface NewTripInput {
   name: string
   defaultCurrency: string
@@ -69,6 +72,8 @@ export interface TripsRepository {
   /** Insert or update an expense and replace its shares. Idempotent on `expense.id`. */
   saveExpense(expense: TripExpense, shares: TripExpenseShare[]): Promise<void>
   deleteExpense(expenseId: string): Promise<void>
+  /** Re-converts every expense (and settlements and budget) into `currency`. See `RatesPayload`. */
+  setDefaultCurrency(tripId: string, currency: string, rates: RatesPayload): Promise<void>
   /** Returns the new category id. Rejects with code '23505' on a duplicate name. */
   createCategory(tripId: string, input: CategoryInput): Promise<string>
   updateCategory(categoryId: string, patch: CategoryPatch): Promise<void>

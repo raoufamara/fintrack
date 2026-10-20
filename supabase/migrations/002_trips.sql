@@ -787,7 +787,7 @@ $$;
 
 -- 4.6 set_trip_default_currency ------------------------------------------
 -- p_rates shape: { "<CCY>": { "<YYYY-MM-DD>": <rate to the NEW default>, "latest": <rate> } }
--- Each expense is looked up by its currency and coalesce(fx_date, date), then 'latest'.
+-- Each expense is looked up by its currency and its own date (e.date), then 'latest'.
 -- An expense with no supplied rate becomes pending (fx_rate null) for the reconciler.
 -- Settlements and the budget are also moved to the new currency, so p_rates must
 -- include the OLD default currency (a 'latest' entry at least) when they exist.
@@ -833,7 +833,7 @@ begin
 
   -- Expenses.
   for v_row in
-    select e.id, e.currency, e.amount, coalesce(e.fx_date, e.date) as rate_date
+    select e.id, e.currency, e.amount, e.date as rate_date
       from public.trip_expenses e
       where e.trip_id = p_trip_id
       for update

@@ -107,3 +107,20 @@ export function usedCategoriesBySpend(snap: TripSnapshot): TripCategory[] {
     .filter((c) => spend.has(c.id))
     .sort((a, b) => (spend.get(b.id) ?? 0) - (spend.get(a.id) ?? 0) || a.sort_order - b.sort_order)
 }
+
+/** Currency this member used on their most recent expense, else the trip default. */
+export function lastCurrencyUsed(snap: TripSnapshot, memberId: string | undefined): string {
+  const last = [...snap.expenses]
+    .filter((e) => e.paid_by === memberId)
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0))[0]
+  return last?.currency ?? snap.trip.default_currency
+}
+
+/** Currencies used on the trip other than the default, most recent expense first. */
+export function usedCurrencies(snap: TripSnapshot): string[] {
+  const seen: string[] = []
+  for (const e of sortExpenses(snap.expenses)) {
+    if (e.currency !== snap.trip.default_currency && !seen.includes(e.currency)) seen.push(e.currency)
+  }
+  return seen
+}
