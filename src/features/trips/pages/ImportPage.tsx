@@ -35,6 +35,8 @@ interface Done {
 
 /** Rate tables downloaded at once while importing. */
 const RATE_CONCURRENCY = 6
+/** Longest the import waits for exchange rates before importing the rest as pending. */
+const RATE_DEADLINE_MS = 15_000
 
 const inputClass =
   'h-12 w-full min-w-0 rounded-[12px] border border-gray-300 bg-surface px-3.5 text-[15px] font-semibold outline-none focus:border-2 focus:border-primary focus:px-[13px]'
@@ -133,9 +135,10 @@ export function ImportPage() {
       const dates = [...byDate.keys()]
       const rates = new Map<string, RateLookup | null>()
       let finished = 0
+      let timedOut = false
       setRateProgress(dates.length > 0 ? { done: 0, total: dates.length } : null)
       const worker = async () => {
-        for (let date = dates.shift(); date !== undefined; date = dates.shift()) {
+        for (let date = dates.shift(); date !== undefined && !timedOut; date = dates.shift()) {
           for (const from of byDate.get(date) ?? []) {
             const found = await fx.getRate(from, currency, date)
             rates.set(rateKey(from, date), found ? { rate: found.rate, source: found.source, tableDate: found.tableDate } : null)
@@ -144,7 +147,19 @@ export function ImportPage() {
           setRateProgress({ done: finished, total: byDate.size })
         }
       }
-      await Promise.all(Array.from({ length: Math.min(RATE_CONCURRENCY, dates.length) }, worker))
+      // Rates still missing at the deadline are imported as pending; the app
+      // fills them in later, so a slow rate source never holds the import up.
+      let timer: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([
+        Promise.all(Array.from({ length: Math.min(RATE_CONCURRENCY, dates.length) }, worker)),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(() => {
+            timedOut = true
+            resolve()
+          }, RATE_DEADLINE_MS)
+        }),
+      ])
+      clearTimeout(timer)
       setRateProgress(null)
       const built = buildImportPayload(plan, {
         meKey: me,
@@ -186,7 +201,7 @@ export function ImportPage() {
           <b className="text-base">Importing your trip…</b>
           <p className="text-sm text-text-muted">
             {rateProgress
-              ? `Getting exchange rates: ${rateProgress.done} of ${rateProgress.total} days`
+              ? `Getting exchange rates: ${rateProgress.done} of ${rateProgress.total} ${rateProgress.total === 1 ? 'day' : 'days'}`
               : 'This takes a few seconds.'}
           </p>
         </div>

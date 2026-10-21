@@ -156,6 +156,25 @@ describe('import screen', () => {
     expect(maxInFlight).toBeGreaterThan(1)
   })
 
+  it('imports expenses as pending when exchange rates do not arrive in time', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const csv = 'Date,Description,Category,Cost,Currency,Ann,Bob\n2026-10-03,Lunch,Dining out,10.00,EUR,5.00,-5.00\n2026-10-04,Lunch 2,Dining out,12.00,EUR,6.00,-6.00\n2026-10-05,Taxi,Taxi,8.00,USD,4.00,-4.00\n'
+      const { fx } = makeFx()
+      const stuckFx = { ...fx, getRate: () => new Promise<null>(() => undefined) }
+      renderTrips('/trips/import', { seed: [], fx: stuckFx })
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      await user.upload(await screen.findByLabelText('Splitwise CSV file'), csvFile(csv))
+      await user.click(await screen.findByRole('radio', { name: 'Ann' }))
+      await user.click(screen.getByRole('button', { name: 'Import trip' }))
+      expect(await screen.findByText('Getting exchange rates: 0 of 1 day')).toBeInTheDocument()
+      await vi.advanceTimersByTimeAsync(15_000)
+      expect(await screen.findByText('Imported 3 expenses and 0 payments')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('shows the Splitwise import button on the list and in the empty state', async () => {
     renderTrips('/trips', { seed: [], fx: makeFx().fx })
     expect(await screen.findByText('No trips yet')).toBeInTheDocument()
