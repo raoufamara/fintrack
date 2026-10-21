@@ -33,6 +33,9 @@ interface Done {
   verification: VerificationResult
 }
 
+/** Rate tables downloaded at once while importing. */
+const RATE_CONCURRENCY = 6
+
 const inputClass =
   'h-12 w-full min-w-0 rounded-[12px] border border-gray-300 bg-surface px-3.5 text-[15px] font-semibold outline-none focus:border-2 focus:border-primary focus:px-[13px]'
 
@@ -71,6 +74,7 @@ export function ImportPage() {
   const [importing, setImporting] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
   const [done, setDone] = useState<Done | null>(null)
+  const [rateProgress, setRateProgress] = useState<{ done: number; total: number } | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const handleFile = async (file: File) => {
@@ -119,14 +123,29 @@ export function ImportPage() {
     setImporting(true)
     setImportError(null)
     try {
-      const rates = new Map<string, RateLookup | null>()
+      // One rate table per date answers every currency of that date, so dates
+      // are fetched a few at a time and currencies of one date in turn (the
+      // second one comes from the table the first one cached).
+      const byDate = new Map<string, string[]>()
       for (const need of neededRates(plan, currency)) {
-        const found = await fx.getRate(need.currency, currency, need.date)
-        rates.set(
-          rateKey(need.currency, need.date),
-          found ? { rate: found.rate, source: found.source, tableDate: found.tableDate } : null,
-        )
+        byDate.set(need.date, [...(byDate.get(need.date) ?? []), need.currency])
       }
+      const dates = [...byDate.keys()]
+      const rates = new Map<string, RateLookup | null>()
+      let finished = 0
+      setRateProgress(dates.length > 0 ? { done: 0, total: dates.length } : null)
+      const worker = async () => {
+        for (let date = dates.shift(); date !== undefined; date = dates.shift()) {
+          for (const from of byDate.get(date) ?? []) {
+            const found = await fx.getRate(from, currency, date)
+            rates.set(rateKey(from, date), found ? { rate: found.rate, source: found.source, tableDate: found.tableDate } : null)
+          }
+          finished += 1
+          setRateProgress({ done: finished, total: byDate.size })
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(RATE_CONCURRENCY, dates.length) }, worker))
+      setRateProgress(null)
       const built = buildImportPayload(plan, {
         meKey: me,
         tripName: name,
@@ -152,6 +171,7 @@ export function ImportPage() {
         verification: loaded.verification,
       })
     } finally {
+      setRateProgress(null)
       setImporting(false)
     }
   }
@@ -164,7 +184,11 @@ export function ImportPage() {
         <div role="status" aria-label="Importing your trip" className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
           <div className="h-10 w-10 animate-spin rounded-full border-[3px] border-primary border-t-transparent" />
           <b className="text-base">Importing your trip…</b>
-          <p className="text-sm text-text-muted">This takes a few seconds.</p>
+          <p className="text-sm text-text-muted">
+            {rateProgress
+              ? `Getting exchange rates: ${rateProgress.done} of ${rateProgress.total} days`
+              : 'This takes a few seconds.'}
+          </p>
         </div>
       </Screen>
     )
