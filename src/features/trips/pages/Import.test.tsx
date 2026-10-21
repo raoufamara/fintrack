@@ -128,6 +128,53 @@ describe('import screen', () => {
     expect(await screen.findByText('Connect to the internet to import payments in other currencies.')).toBeInTheDocument()
   })
 
+  it('fetches the rates of several days at once, one table per day', async () => {
+    const eur = Array.from({ length: 9 }, (_, i) => `2026-10-0${i + 1},Dinner ${i + 1},Dining out,10.00,EUR,5.00,-5.00`)
+    const usd = Array.from({ length: 8 }, (_, i) => `2026-10-0${i + 1},Taxi ${i + 1},Taxi,8.00,USD,4.00,-4.00`)
+    const csv = ['Date,Description,Category,Cost,Currency,Ann,Bob', ...eur, ...usd, ''].join('\n')
+    const { fx } = makeFx()
+    let inFlight = 0
+    let maxInFlight = 0
+    const calls: string[] = []
+    const slowFx = {
+      ...fx,
+      getRate: async (from: string, _to: string, date?: string) => {
+        calls.push(`${from}:${date}`)
+        inFlight += 1
+        maxInFlight = Math.max(maxInFlight, inFlight)
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        inFlight -= 1
+        return { rate: 0.9, source: 'api' as const, ageHours: 0, tableDate: date ?? null }
+      },
+    }
+    renderTrips('/trips/import', { seed: [], fx: slowFx })
+    await pick(csv)
+    await userEvent.click(await screen.findByRole('radio', { name: 'Ann' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Import trip' }))
+    expect(await screen.findByText('Imported 17 expenses and 0 payments')).toBeInTheDocument()
+    expect(calls).toHaveLength(8)
+    expect(maxInFlight).toBeGreaterThan(1)
+  })
+
+  it('imports expenses as pending when exchange rates do not arrive in time', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const csv = 'Date,Description,Category,Cost,Currency,Ann,Bob\n2026-10-03,Lunch,Dining out,10.00,EUR,5.00,-5.00\n2026-10-04,Lunch 2,Dining out,12.00,EUR,6.00,-6.00\n2026-10-05,Taxi,Taxi,8.00,USD,4.00,-4.00\n'
+      const { fx } = makeFx()
+      const stuckFx = { ...fx, getRate: () => new Promise<null>(() => undefined) }
+      renderTrips('/trips/import', { seed: [], fx: stuckFx })
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+      await user.upload(await screen.findByLabelText('Splitwise CSV file'), csvFile(csv))
+      await user.click(await screen.findByRole('radio', { name: 'Ann' }))
+      await user.click(screen.getByRole('button', { name: 'Import trip' }))
+      expect(await screen.findByText('Getting exchange rates: 0 of 1 day')).toBeInTheDocument()
+      await vi.advanceTimersByTimeAsync(15_000)
+      expect(await screen.findByText('Imported 3 expenses and 0 payments')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('shows the Splitwise import button on the list and in the empty state', async () => {
     renderTrips('/trips', { seed: [], fx: makeFx().fx })
     expect(await screen.findByText('No trips yet')).toBeInTheDocument()
