@@ -24,7 +24,7 @@ export default defineConfig({
       manifest: {
         name: 'Fintrack',
         short_name: 'Fintrack',
-        description: 'Budgets and shared trip expenses',
+        description: 'Track and split trip expenses with friends',
         start_url: '/',
         scope: '/',
         display: 'standalone',

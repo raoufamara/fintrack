@@ -34,7 +34,7 @@ export function Login() {
       <div className="w-full max-w-sm">
         <img src="/fintrack.svg" alt="" className="mx-auto mb-4 h-16 w-16" />
         <h1 className="text-3xl font-bold text-center text-primary-dark">Fintrack</h1>
-        <p className="text-text-secondary text-center mt-2">Welcome back</p>
+        <p className="text-text-secondary text-center mt-2">Split trip costs with friends</p>
 
         <form onSubmit={handleSubmit} className="mt-8 space-y-4">
           {error && (
