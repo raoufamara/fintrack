@@ -355,7 +355,7 @@ function ExpenseForm({ snapshot, expenseId }: { snapshot: TripSnapshot; expenseI
               <button
                 type="button"
                 onClick={() => setSheet('category')}
-                className="flex h-16 flex-col items-center justify-center gap-1 rounded-[14px] border border-dashed border-[#B9A1FF] bg-primary-tint px-1 text-[11px] font-bold text-primary"
+                className="flex h-16 flex-col items-center justify-center gap-1 rounded-[14px] border border-dashed border-[#6FD0C6] bg-primary-tint px-1 text-[11px] font-bold text-primary"
               >
                 <Plus size={20} aria-hidden="true" />
                 <span>New</span>

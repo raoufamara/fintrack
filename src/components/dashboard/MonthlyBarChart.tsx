@@ -31,7 +31,7 @@ export function MonthlyBarChart() {
           />
           <Bar
             dataKey="total"
-            fill="#7340FE"
+            fill="#0B7A77"
             radius={[4, 4, 0, 0]}
             maxBarSize={32}
           />

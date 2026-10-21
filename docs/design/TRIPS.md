@@ -143,7 +143,7 @@ Suggested set: bed-double, hotel, tent, utensils, coffee, wine, beer, pizza, tra
 All screens are mobile-first. Content is max-width `md` and centred on desktop. Touch targets are at least 44px.
 
 ### 4.1 Trips list (screen 1)
-- **Ongoing trips** use the large dark card (`#2F1D4F`). It shows name, dates, members, the default currency, "Day X of Y", spend vs budget, and your balance line.
+- **Ongoing trips** use the large dark card (`#0B3B3D`). It shows name, dates, members, the default currency, "Day X of Y", spend vs budget, and your balance line.
 - **Past trips** use compact cards with "Settled" or "Open balance".
 - **Buttons:** "New trip" (primary) and "Join with code" (secondary).
 - **Empty state:** an illustration slot, one line of copy, and a "New trip" button.

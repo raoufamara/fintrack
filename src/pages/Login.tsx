@@ -32,6 +32,7 @@ export function Login() {
   return (
     <div className="min-h-screen bg-background flex flex-col items-center justify-center px-5">
       <div className="w-full max-w-sm">
+        <img src="/fintrack.svg" alt="" className="mx-auto mb-4 h-16 w-16" />
         <h1 className="text-3xl font-bold text-center text-primary-dark">Fintrack</h1>
         <p className="text-text-secondary text-center mt-2">Welcome back</p>
 

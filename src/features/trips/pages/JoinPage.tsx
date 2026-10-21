@@ -143,7 +143,7 @@ export function JoinPage() {
         <div className="flex flex-col gap-5 p-4 pb-10">
           <div className="rounded-[20px] bg-primary-dark p-[18px] text-white">
             <div className="text-xl font-extrabold">{phase.preview.name}</div>
-            <div className="text-[13px] font-semibold text-[#CFC3F5]">
+            <div className="text-[13px] font-semibold text-[#A9DCD7]">
               {formatRange(phase.preview.startDate, phase.preview.endDate)}
               {formatRange(phase.preview.startDate, phase.preview.endDate) ? ' · ' : ''}
               {phase.preview.defaultCurrency}
@@ -196,7 +196,7 @@ export function JoinPage() {
                 type="button"
                 disabled={choice === null || busy}
                 onClick={() => void join()}
-                className="h-14 w-full rounded-full bg-primary text-base font-bold text-white disabled:bg-[#C9C2DA]"
+                className="h-14 w-full rounded-full bg-primary text-base font-bold text-white disabled:bg-[#B5CFCC]"
               >
                 Join trip
               </button>

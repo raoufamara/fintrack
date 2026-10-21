@@ -360,7 +360,7 @@ export function TripSettingsPage() {
                 type="button"
                 onClick={confirm}
                 disabled={plan.missing.length > 0 || saving}
-                className="h-14 flex-1 rounded-full bg-primary text-base font-bold text-white disabled:bg-[#C9C2DA]"
+                className="h-14 flex-1 rounded-full bg-primary text-base font-bold text-white disabled:bg-[#B5CFCC]"
               >
                 Change currency
               </button>

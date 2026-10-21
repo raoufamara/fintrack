@@ -209,7 +209,7 @@ export function TripPage() {
         </div>
         <div className="flex items-end justify-between gap-3">
           <div className="flex min-w-0 flex-col gap-1">
-            <span className="text-[13px] font-semibold text-[#CFC3F5]">
+            <span className="text-[13px] font-semibold text-[#A9DCD7]">
               {range ? `${range} · ` : ''}
               {currency}
             </span>
@@ -228,20 +228,20 @@ export function TripPage() {
         </div>
         <div className={`grid gap-2.5 ${guest ? 'grid-cols-1' : 'grid-cols-2'}`}>
           <div className="flex flex-col gap-1 rounded-[14px] bg-white/10 p-3">
-            <span className="text-xs font-semibold text-[#CFC3F5]">Group spent</span>
+            <span className="text-xs font-semibold text-[#A9DCD7]">Group spent</span>
             <span className="text-xl font-extrabold tabular-nums">{spentShown.main}</span>
-            {spentShown.sub && <span className="text-[11px] tabular-nums text-[#CFC3F5]">{spentShown.sub}</span>}
+            {spentShown.sub && <span className="text-[11px] tabular-nums text-[#A9DCD7]">{spentShown.sub}</span>}
             {budget !== null ? (
               <>
                 <span className="block h-1.5 overflow-hidden rounded bg-white/15">
-                  <i className="block h-full bg-[#B9A1FF]" style={{ width: `${pct}%` }} />
+                  <i className="block h-full bg-[#6FD0C6]" style={{ width: `${pct}%` }} />
                 </span>
-                <span className="text-[11px] text-[#CFC3F5]">
+                <span className="text-[11px] text-[#A9DCD7]">
                   {pct}% of {money(budget)} budget
                 </span>
               </>
             ) : (
-              <span className="text-[11px] text-[#CFC3F5]">No budget set</span>
+              <span className="text-[11px] text-[#A9DCD7]">No budget set</span>
             )}
             {summary.pendingCount > 0 && (
               <span className="text-[11px] font-bold text-owe-light">
@@ -255,12 +255,12 @@ export function TripPage() {
             onClick={() => navigate('balances')}
             className="flex flex-col gap-1 rounded-[14px] bg-white/10 p-3 text-left"
           >
-            <span className="text-xs font-semibold text-[#CFC3F5]">Your balance</span>
+            <span className="text-xs font-semibold text-[#A9DCD7]">Your balance</span>
             <span className="text-xl font-extrabold tabular-nums" style={{ color: balanceColor }}>
               {balanceShown.main}
             </span>
-            {balanceShown.sub && <span className="text-[11px] tabular-nums text-[#CFC3F5]">{balanceShown.sub}</span>}
-            <span className="text-[11px] text-[#CFC3F5]">{balanceSub} · Settle up ›</span>
+            {balanceShown.sub && <span className="text-[11px] tabular-nums text-[#A9DCD7]">{balanceShown.sub}</span>}
+            <span className="text-[11px] text-[#A9DCD7]">{balanceSub} · Settle up ›</span>
           </button>
           )}
         </div>
@@ -443,7 +443,7 @@ export function TripPage() {
           <button
             type="button"
             onClick={() => navigate('expenses/new')}
-            className="pointer-events-auto flex h-14 items-center gap-2 rounded-full bg-primary px-5 text-[15px] font-bold text-white shadow-[0_6px_20px_rgba(115,64,254,0.4)]"
+            className="pointer-events-auto flex h-14 items-center gap-2 rounded-full bg-primary px-5 text-[15px] font-bold text-white shadow-[0_6px_20px_rgba(11,122,119,0.4)]"
           >
             <Plus size={20} aria-hidden="true" />
             Add expense
